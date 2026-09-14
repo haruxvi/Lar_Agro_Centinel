@@ -1,0 +1,1 @@
+"""AgroVista backend application package."""

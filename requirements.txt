@@ -1,0 +1,11 @@
+# Runtime dependencies. Pinned to the versions verified on Python 3.14.
+alembic==1.20.0
+fastapi==0.141.1
+psycopg[binary]==3.3.5
+pydantic[email]==2.13.5
+pydantic-settings==2.15.0
+PyJWT==2.14.0
+redis==8.1.0
+SQLAlchemy==2.0.52
+structlog==26.1.0
+uvicorn==0.53.0

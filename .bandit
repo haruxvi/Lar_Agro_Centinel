@@ -1,0 +1,5 @@
+# Bandit configuration (YAML, consumed via `bandit -c .bandit`).
+exclude_dirs:
+  - "./.venv"
+  - "./backend/tests"
+  - "./frontend-v2/node_modules"
