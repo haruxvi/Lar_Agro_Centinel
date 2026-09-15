@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: lar_postgres
+    environment:
+      POSTGRES_DB: lar_agro_centinel
+      POSTGRES_USER: lar_dev
+      POSTGRES_PASSWORD: lar_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # Force TCP: during first-time init the entrypoint runs a temporary server that
+      # only listens on the Unix socket, which would report healthy too early.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U lar_dev -d lar_agro_centinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lar_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: lar_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - lar_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: lar_backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://lar_dev:lar_dev_password@postgres:5432/lar_agro_centinel
+      REDIS_URL: redis://redis:6379/0
+      # File events from Windows/macOS bind mounts do not reach the Linux VM;
+      # inotify fails (ENOMEM) and crashes the reloader, so poll instead.
+      WATCHFILES_FORCE_POLLING: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - lar_network
+    command: uvicorn app.main:app --app-dir backend --host 0.0.0.0 --reload --reload-dir backend
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lar_frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:8000
+      # The Vite dev proxy runs inside the container, so it must reach the
+      # backend through the Compose network instead of localhost.
+      VITE_PROXY_TARGET: http://backend:8000
+      VITE_USE_POLLING: "true"
+    networks:
+      - lar_network
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  lar_network:
+    driver: bridge

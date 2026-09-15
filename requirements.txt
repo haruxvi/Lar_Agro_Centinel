@@ -1,11 +1,65 @@
-# Runtime dependencies. Pinned to the versions verified on Python 3.14.
-alembic==1.20.0
+# Runtime dependencies. Pinned to versions verified on Python 3.12.
+# Deviations from the Phase 0 pins are documented in docs/dependencies.md.
+
+# --- Web framework & ASGI ---
 fastapi==0.141.1
-psycopg[binary]==3.3.5
+uvicorn==0.53.0
+python-multipart==0.0.32
+
+# --- Settings & validation ---
 pydantic[email]==2.13.5
 pydantic-settings==2.15.0
-PyJWT==2.14.0
-redis==8.1.0
+email-validator==2.3.0
+
+# --- Persistence ---
 SQLAlchemy==2.0.52
+alembic==1.20.0
+psycopg[binary]==3.3.5
+
+# --- Logging ---
 structlog==26.1.0
-uvicorn==0.53.0
+
+# --- Geospatial processing ---
+rasterio==1.4.3
+geopandas==1.1.2
+shapely==2.1.0
+fiona==1.10.1
+pyproj==3.7.0
+
+# --- Satellite imagery ---
+sentinelhub==3.11.5
+
+# --- Computer vision ---
+opencv-python==4.10.0.84
+numpy==2.1.3
+Pillow==12.3.0
+
+# --- ML inference (torch is added in Phase 10) ---
+scikit-learn==1.5.2
+transformers==5.17.0
+
+# --- PDF generation ---
+fpdf2==2.8.2
+
+# --- Authentication & 2FA ---
+PyJWT==2.14.0
+pyotp==2.9.0
+qrcode[pil]==7.4.2
+passlib[bcrypt]==1.7.4
+bcrypt==4.3.0  # passlib 1.7.4 breaks with bcrypt>=5 (see docs/dependencies.md)
+
+# --- Rate limiting ---
+slowapi==0.1.9
+
+# --- Cache ---
+redis==5.3.1
+aiocache==0.12.3
+
+# --- HTTP client ---
+httpx==0.28.1
+
+# --- Background tasks ---
+arq==0.26.3
+
+# --- Encryption at rest ---
+cryptography==50.0.1

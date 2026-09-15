@@ -19,7 +19,13 @@ class Base(DeclarativeBase):
 def get_engine() -> Engine:
     """Return the process-wide SQLAlchemy engine."""
     settings = get_settings()
-    return create_engine(settings.database_url, pool_pre_ping=True, future=True)
+    return create_engine(
+        str(settings.database_url),
+        pool_pre_ping=True,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+        echo=settings.database_echo,
+    )
 
 
 @lru_cache(maxsize=1)

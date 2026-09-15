@@ -1,1 +1,1 @@
-"""AgroVista backend application package."""
+"""Lar Agro Centinel backend application package."""

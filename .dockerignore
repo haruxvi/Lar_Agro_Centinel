@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+venv
+.env
+.env.*
+!.env.example
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+frontend
+docs
+.claude

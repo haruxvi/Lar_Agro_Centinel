@@ -1,7 +1,7 @@
 """System roles.
 
 This enum is the single source of truth on the backend and must stay in sync
-with ``frontend-v2/src/config/roles.ts``.
+with ``frontend/src/config/roles.ts``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class Role(StrEnum):
 
 ROLE_LABELS: dict[Role, str] = {
     Role.PROPIETARIO: "Propietario",
-    Role.ADMIN_OPERACIONES: "Admin Operaciones",
+    Role.ADMIN_OPERACIONES: "Administrador de Operaciones",
     Role.AGRONOMO: "Agrónomo",
     Role.OPERADOR_DRONE: "Operador de Drone",
     Role.APLICADOR: "Aplicador",
@@ -35,6 +35,7 @@ ROLE_LABELS: dict[Role, str] = {
     Role.APICULTOR: "Apicultor Registrado",
 }
 
+# Immutable on purpose: a security policy must not be altered at runtime.
 ROLES_2FA_REQUIRED: frozenset[Role] = frozenset(
     {
         Role.PROPIETARIO,

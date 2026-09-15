@@ -1,7 +1,7 @@
 [project]
-name = "agrovista-backend"
-version = "0.2.0"
-description = "AgroVista precision agriculture platform - backend"
+name = "lar-agro-centinel-backend"
+version = "0.1.0"
+description = "Lar Agro Centinel - rural guardian platform for Chilean agricultural estates (backend)"
 requires-python = ">=3.12"
 
 [tool.ruff]
@@ -14,7 +14,7 @@ select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "ANN", "S", "D"]
 ignore = ["D203", "D213", "ANN401"]
 
 [tool.ruff.lint.per-file-ignores]
-"backend/tests/**" = ["S101", "D103"]
+"backend/tests/**" = ["S101", "S105", "S106", "D103"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
@@ -35,6 +35,12 @@ warn_redundant_casts = true
 no_implicit_optional = true
 explicit_package_bases = true
 mypy_path = "backend"
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
 
 [[tool.mypy.overrides]]
 module = ["rasterio.*", "shapely.*", "geopandas.*", "sentinelhub.*"]

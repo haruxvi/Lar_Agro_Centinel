@@ -2,4 +2,4 @@
 exclude_dirs:
   - "./.venv"
   - "./backend/tests"
-  - "./frontend-v2/node_modules"
+  - "./frontend/node_modules"

@@ -1,0 +1,38 @@
+name: Frontend Quality Gates
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-quality.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-quality.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # Node 20 reached end of life on 2026-04-30; Vite 8 requires >=20.19.
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      # tsconfig.json only holds project references, so `tsc --noEmit` on it checks
+      # nothing; `tsc -b` type-checks every referenced project (all use noEmit).
+      - run: npm run type-check
+      - run: npm run build

@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.shared.config import get_settings
 from app.shared.security import TokenError, create_access_token, decode_access_token
 
 
@@ -15,10 +16,13 @@ def test_token_roundtrip_preserves_subject_and_claims() -> None:
     assert payload["sub"] == "user-1"
     assert payload["role"] == "AUDITOR"
     assert payload["exp"] > payload["iat"]
+    assert payload["iss"] == "lar-agro-centinel"
 
 
 def test_expired_token_is_rejected() -> None:
-    token = create_access_token("user-1", expires_delta=timedelta(seconds=-1))
+    # Expire the token beyond the configured clock-skew leeway.
+    leeway = get_settings().jwt_leeway_seconds
+    token = create_access_token("user-1", expires_delta=timedelta(seconds=-(leeway + 5)))
     with pytest.raises(TokenError):
         decode_access_token(token)
 
