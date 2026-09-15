@@ -100,3 +100,15 @@ each exposing a clear public API; modules communicate through an internal event
 bus rather than direct calls. This keeps extraction into separate services a
 mechanical change if scale ever requires it, without paying distributed-system
 costs today.
+
+---
+
+## Copyright and usage
+
+Copyright (c) 2026 haruxvi. All rights reserved.
+
+This is proprietary software. The source is public for portfolio and
+transparency purposes only — no license is granted to use, copy,
+modify or distribute it. See the [NOTICE](NOTICE) file for details.
+
+For licensing or commercial inquiries, open an issue.

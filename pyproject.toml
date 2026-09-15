@@ -1,8 +1,13 @@
 [project]
-name = "lar-agro-centinel-backend"
+name = "lar-agro-centinel"
 version = "0.1.0"
-description = "Lar Agro Centinel - rural guardian platform for Chilean agricultural estates (backend)"
+description = "Agricultural operations platform for Chilean farms"
 requires-python = ">=3.12"
+license = { text = "Proprietary" }
+classifiers = [
+    "License :: Other/Proprietary License",
+    "Private :: Do Not Upload",
+]
 
 [tool.ruff]
 line-length = 90
