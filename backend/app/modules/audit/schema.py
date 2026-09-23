@@ -8,6 +8,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from app.shared.enums import AuditEventCategory, AuditEventSeverity, AuditOutcome
+from app.shared.roles import Role
+
 
 class AuditLogRead(BaseModel):
     """Audit entry representation exposed to API clients."""
@@ -15,11 +18,17 @@ class AuditLogRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    tenant_id: uuid.UUID
-    actor_id: uuid.UUID | None = None
-    event: str
-    resource_type: str
-    resource_id: str | None = None
-    request_id: str | None = None
-    payload: dict[str, Any] | None = None
-    created_at: datetime
+    timestamp: datetime
+    event_category: AuditEventCategory
+    event_type: str
+    severity: AuditEventSeverity
+    actor_user_id: uuid.UUID | None = None
+    actor_role: Role | None = None
+    actor_ip: str | None = None
+    target_resource_type: str | None = None
+    target_resource_id: uuid.UUID | None = None
+    predio_id: uuid.UUID | None = None
+    action: str
+    outcome: AuditOutcome
+    details: dict[str, Any] = {}
+    correlation_id: uuid.UUID | None = None

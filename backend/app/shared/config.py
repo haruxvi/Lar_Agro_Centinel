@@ -5,8 +5,28 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, SecretStr
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Placeholder secrets that ship in documentation and templates. A deployment
+# that still carries one of these is misconfigured, and the app must not start.
+_EXAMPLE_SECRET_PREFIXES = ("change", "dev_secret", "your_", "example", "replace")
+_EXAMPLE_SECRETS = frozenset(
+    {
+        "secret",
+        "password",
+        "another_32_chars_min_random_key_yyyyy",
+        "insecure",
+    }
+)
+
+
+def _looks_like_an_example_secret(value: str) -> bool:
+    """Return whether a secret is one of the well-known placeholders."""
+    normalized = value.strip().lower()
+    return normalized in _EXAMPLE_SECRETS or normalized.startswith(
+        _EXAMPLE_SECRET_PREFIXES
+    )
 
 
 class Settings(BaseSettings):
@@ -33,8 +53,13 @@ class Settings(BaseSettings):
     jwt_issuer: str = "lar-agro-centinel"
     jwt_leeway_seconds: int = 30
 
-    # Security - passwords
-    password_hash_rounds: int = 12
+    # Security - passwords (Argon2id, see docs/dependencies.md)
+    # Calibrated to ~280 ms per hash; see docs/dependencies.md. Each concurrent
+    # hash holds argon2_memory_cost of RAM, so re-measure on the target host.
+    argon2_time_cost: int = 5
+    argon2_memory_cost: int = 131072  # KiB, i.e. 128 MiB
+    argon2_parallelism: int = 2
+    password_min_length: int = 12
 
     # 2FA
     totp_issuer: str = "Lar Agro Centinel"
@@ -43,7 +68,10 @@ class Settings(BaseSettings):
     recovery_codes_count: int = 10
 
     # Database
+    # Runtime connection: the least-privileged application role.
     database_url: PostgresDsn
+    # Migration connection: the schema owner. Used by Alembic only.
+    database_migration_url: PostgresDsn
     database_pool_size: int = 10
     database_max_overflow: int = 20
     database_echo: bool = False
@@ -56,6 +84,9 @@ class Settings(BaseSettings):
     rate_limit_default: str = "100/minute"
     rate_limit_auth: str = "5/15minutes"
     rate_limit_2fa: str = "5/15minutes"
+    # Switched off only where throttling would test the limiter instead of
+    # the endpoint (the suite enables it explicitly where it is the subject).
+    rate_limit_enabled: bool = True
 
     # CORS
     cors_allowed_origins: list[str] = ["http://localhost:5173"]
@@ -77,6 +108,38 @@ class Settings(BaseSettings):
     audit_retention_days_security: int = 365
     audit_retention_days_domain: int = 1825  # 5 years
     audit_retention_days_products: int = 3650  # 10 years (SAG)
+
+    @model_validator(mode="after")
+    def _validate_security(self) -> Settings:
+        """Refuse to start with an insecure configuration.
+
+        Fail-closed: a missing or placeholder security setting stops the
+        process instead of silently degrading into an insecure default.
+        """
+        secret = self.secret_key.get_secret_value()
+        totp_key = self.totp_secret_encryption_key.get_secret_value()
+
+        if _looks_like_an_example_secret(secret):
+            raise ValueError("SECRET_KEY is a placeholder value; generate a real one")
+        if _looks_like_an_example_secret(totp_key):
+            raise ValueError(
+                "TOTP_SECRET_ENCRYPTION_KEY is a placeholder value; generate a real one"
+            )
+        if secret == totp_key:
+            raise ValueError(
+                "SECRET_KEY and TOTP_SECRET_ENCRYPTION_KEY must be different: "
+                "one signs sessions, the other encrypts stored 2FA secrets"
+            )
+
+        if self.environment == "production":
+            if self.debug:
+                raise ValueError("DEBUG must be false in production")
+            if "*" in self.cors_allowed_origins:
+                raise ValueError(
+                    "CORS_ALLOWED_ORIGINS must not contain '*' in production"
+                )
+
+        return self
 
 
 @lru_cache(maxsize=1)

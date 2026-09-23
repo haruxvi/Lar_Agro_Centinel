@@ -24,7 +24,8 @@ The Python runtime itself is covered by
 | email-validator | 2.2.0 | 2.3.0 | Founder decision. |
 | pytest-asyncio | 0.24.0 | 1.4.0 | 0.24.0 requires `pytest<9`, incompatible with the patched pytest. |
 | redis | 8.1.0 (pre-existing) | 5.3.1 | Every arq release, including the latest (0.28.0), requires `redis<6`. 5.3.1 is the latest 5.x and has no known advisories. |
-| bcrypt (transitive) | — | 4.3.0 | passlib 1.7.4 fails with bcrypt 5.0.0 (`ValueError: password cannot be longer than 72 bytes` during its backend self-test). Verified that hashing and verification work with 4.3.0. |
+| ~~bcrypt (transitive)~~ | — | removed | Was pinned to 4.3.0 because passlib 1.7.4 fails with bcrypt 5.0.0. Both were removed in Phase 1. |
+| passlib | `passlib[bcrypt]==1.7.4` | **removed** | Unmaintained since 2020 and the reason bcrypt had to stay on 4.x. Replaced by `argon2-cffi==25.1.0` (Argon2id), which OWASP puts ahead of bcrypt for password storage. No legacy hashes existed, so no migration path was needed. |
 
 All other runtime and development pins match the prompt. Pre-existing tooling pins
 (`mypy 2.3.1`, `ruff`, `bandit`, `pip-audit`) are unchanged.
@@ -34,9 +35,26 @@ Verification on the final set: `pip check` reports no broken requirements and
 
 ### Follow-ups worth a decision
 
-- **passlib is unmaintained** (last release 2020) and is the reason bcrypt must stay
-  on 4.x. Phase 1 (auth) is the natural moment to decide whether to keep it or move to
-  a maintained alternative.
+- ~~**passlib is unmaintained**~~ — resolved in Phase 1: replaced by `argon2-cffi`.
+
+  **Argon2id calibration.** Parameters live in settings and are calibrated with
+  `scripts/benchmark_argon2.py` against the 250-500 ms window for interactive
+  logins. Measured on the development machine (Windows, Python 3.12):
+
+  | time_cost | memory_cost | parallelism | median |
+  |---|---|---|---|
+  | 3 | 64 MiB | 2 | 93 ms |
+  | 8 | 64 MiB | 2 | 231 ms |
+  | 3 | 128 MiB | 2 | 182 ms |
+  | 4 | 128 MiB | 2 | 227-256 ms |
+  | **5** | **128 MiB** | **2** | **261-293 ms** ← default |
+  | 2 | 256 MiB | 2 | 287 ms |
+
+  The defaults proposed for Phase 1 (`t=3`, 64 MiB) hashed in 93 ms, well under the
+  window. Raising `time_cost` rather than memory keeps the RAM cost per concurrent
+  hash bounded; note that **each concurrent login holds `argon2_memory_cost` of RAM**,
+  so 128 MiB × concurrency must fit the host. Re-run the benchmark on the production
+  host: these numbers do not transfer.
 - **opencv-python** stays on the 4.10 line as pinned; the latest release is 5.0,
   a major version change to evaluate when computer-vision code is written.
 

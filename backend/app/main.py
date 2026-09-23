@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.modules.analysis import router as analysis_router
 from app.modules.audit import router as audit_router
@@ -13,6 +16,7 @@ from app.modules.captures import router as captures_router
 from app.modules.devices import router as devices_router
 from app.modules.health import router as health_router
 from app.modules.inventory import router as inventory_router
+from app.modules.meta import router as meta_router
 from app.modules.notifications import router as notifications_router
 from app.modules.operations import router as operations_router
 from app.modules.predios import router as predios_router
@@ -21,8 +25,12 @@ from app.modules.responsible_mode import router as responsible_mode_router
 from app.modules.users import router as users_router
 from app.modules.warehouses import router as warehouses_router
 from app.shared.config import Settings, get_settings
+from app.shared.logging import configure_logging
+from app.shared.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.shared.rate_limit import limiter
 
 API_PREFIX = "/api/v1"
+META_PREFIX = "/api"
 
 _MODULE_ROUTERS: tuple[APIRouter, ...] = (
     auth_router,
@@ -45,12 +53,20 @@ _MODULE_ROUTERS: tuple[APIRouter, ...] = (
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build and configure the ASGI application."""
     resolved = settings or get_settings()
+    configure_logging(resolved)
+
     app = FastAPI(
         title=resolved.app_name,
         version=resolved.app_version,
         debug=resolved.debug,
     )
 
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+
+    # Added last runs first: security headers wrap everything, so they are
+    # present on rate-limit rejections and unhandled errors too.
+    app.add_middleware(SlowAPIMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_allowed_origins,
@@ -58,8 +74,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(health_router)
+    app.include_router(meta_router, prefix=META_PREFIX)
     for module_router in _MODULE_ROUTERS:
         app.include_router(module_router, prefix=API_PREFIX)
 

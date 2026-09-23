@@ -4,8 +4,10 @@ services:
     container_name: lar_postgres
     environment:
       POSTGRES_DB: lar_agro_centinel
-      POSTGRES_USER: lar_dev
-      POSTGRES_PASSWORD: lar_dev_password
+      # Schema owner. The application connects as lar_app instead, created by
+      # scripts/init-db.sql: see docs/decisions/ADR-002-audit-log-immutability.md.
+      POSTGRES_USER: lar_owner
+      POSTGRES_PASSWORD: lar_owner_password
     ports:
       - "5432:5432"
     volumes:
@@ -14,7 +16,7 @@ services:
     healthcheck:
       # Force TCP: during first-time init the entrypoint runs a temporary server that
       # only listens on the Unix socket, which would report healthy too early.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U lar_dev -d lar_agro_centinel"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U lar_owner -d lar_agro_centinel"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -44,7 +46,8 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://lar_dev:lar_dev_password@postgres:5432/lar_agro_centinel
+      DATABASE_URL: postgresql+psycopg://lar_app:lar_app_password@postgres:5432/lar_agro_centinel
+      DATABASE_MIGRATION_URL: postgresql+psycopg://lar_owner:lar_owner_password@postgres:5432/lar_agro_centinel
       REDIS_URL: redis://redis:6379/0
       # File events from Windows/macOS bind mounts do not reach the Linux VM;
       # inotify fails (ENOMEM) and crashes the reloader, so poll instead.

@@ -45,8 +45,7 @@ fpdf2==2.8.2
 PyJWT==2.14.0
 pyotp==2.9.0
 qrcode[pil]==7.4.2
-passlib[bcrypt]==1.7.4
-bcrypt==4.3.0  # passlib 1.7.4 breaks with bcrypt>=5 (see docs/dependencies.md)
+argon2-cffi==25.1.0
 
 # --- Rate limiting ---
 slowapi==0.1.9

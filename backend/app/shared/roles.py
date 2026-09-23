@@ -1,16 +1,18 @@
 """System roles.
 
-This enum is the single source of truth on the backend and must stay in sync
-with ``frontend/src/config/roles.ts``.
+This module is the single source of truth for the role catalogue. The frontend
+constants in ``frontend/src/config/roles.generated.ts`` are generated from it by
+``scripts/generate_frontend_roles.py``; CI fails when both drift apart.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
 class Role(StrEnum):
-    """Role assigned to a user inside a tenant."""
+    """Role assigned to a user, globally or scoped to a predio."""
 
     PROPIETARIO = "PROPIETARIO"
     ADMIN_OPERACIONES = "ADMIN_OPERACIONES"
@@ -23,16 +25,80 @@ class Role(StrEnum):
     APICULTOR = "APICULTOR"
 
 
-ROLE_LABELS: dict[Role, str] = {
-    Role.PROPIETARIO: "Propietario",
-    Role.ADMIN_OPERACIONES: "Administrador de Operaciones",
-    Role.AGRONOMO: "Agrónomo",
-    Role.OPERADOR_DRONE: "Operador de Drone",
-    Role.APLICADOR: "Aplicador",
-    Role.BODEGUERO: "Bodeguero",
-    Role.JEFE_BODEGA: "Jefe de Bodega",
-    Role.AUDITOR: "Auditor",
-    Role.APICULTOR: "Apicultor Registrado",
+@dataclass(frozen=True)
+class RoleMeta:
+    """Presentation metadata for a role."""
+
+    label: str
+    """Full name, for documents, reports and administration screens."""
+
+    short_label: str
+    """Short form, for badges, sidebars and dense tables."""
+
+    color: str
+    """Tailwind color token."""
+
+    description: str
+    """One-line description, for tooltips and documentation."""
+
+
+ROLE_META: dict[Role, RoleMeta] = {
+    Role.PROPIETARIO: RoleMeta(
+        label="Propietario",
+        short_label="Propietario",
+        color="blue-700",
+        description=(
+            "Dueño del predio. Ve todo lo suyo, asigna usuarios y configura políticas."
+        ),
+    ),
+    Role.ADMIN_OPERACIONES: RoleMeta(
+        label="Administrador de Operaciones",
+        short_label="Admin Operaciones",
+        color="green-600",
+        description="Planifica misiones, asigna tareas y aprueba aplicaciones.",
+    ),
+    Role.AGRONOMO: RoleMeta(
+        label="Agrónomo",
+        short_label="Agrónomo",
+        color="emerald-700",
+        description="Analiza datos, emite reportes técnicos y recomienda tratamientos.",
+    ),
+    Role.OPERADOR_DRONE: RoleMeta(
+        label="Operador de Drone",
+        short_label="Operador",
+        color="orange-500",
+        description="Ejecuta misiones de vuelo y registra capturas.",
+    ),
+    Role.APLICADOR: RoleMeta(
+        label="Aplicador",
+        short_label="Aplicador",
+        color="amber-600",
+        description="Ejecuta aplicaciones de productos y declara EPP utilizado.",
+    ),
+    Role.BODEGUERO: RoleMeta(
+        label="Bodeguero",
+        short_label="Bodeguero",
+        color="stone-600",
+        description="Registra entradas y salidas normales de bodega.",
+    ),
+    Role.JEFE_BODEGA: RoleMeta(
+        label="Jefe de Bodega",
+        short_label="Jefe Bodega",
+        color="stone-800",
+        description="Aprueba movimientos restringidos y gestiona el inventario.",
+    ),
+    Role.AUDITOR: RoleMeta(
+        label="Auditor",
+        short_label="Auditor",
+        color="purple-700",
+        description="Acceso de solo lectura a todo el sistema. Exporta trazabilidad.",
+    ),
+    Role.APICULTOR: RoleMeta(
+        label="Apicultor Registrado",
+        short_label="Apicultor",
+        color="yellow-600",
+        description="Externo. Recibe avisos de aplicaciones cercanas a sus colmenas.",
+    ),
 }
 
 # Immutable on purpose: a security policy must not be altered at runtime.
