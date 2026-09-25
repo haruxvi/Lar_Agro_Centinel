@@ -8,6 +8,8 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+# Registers every table so cross-module foreign keys resolve at runtime.
+from app import models as _registered_models  # noqa: F401
 from app.modules.analysis import router as analysis_router
 from app.modules.audit import router as audit_router
 from app.modules.auth import router as auth_router
@@ -25,8 +27,13 @@ from app.modules.responsible_mode import router as responsible_mode_router
 from app.modules.users import router as users_router
 from app.modules.warehouses import router as warehouses_router
 from app.shared.config import Settings, get_settings
+from app.shared.geo import max_geojson_bytes
 from app.shared.logging import configure_logging
-from app.shared.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.shared.middleware import (
+    BodySizeLimitMiddleware,
+    RequestContextMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.shared.rate_limit import limiter
 
 API_PREFIX = "/api/v1"
@@ -67,6 +74,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Added last runs first: security headers wrap everything, so they are
     # present on rate-limit rejections and unhandled errors too.
     app.add_middleware(SlowAPIMiddleware)
+    # Predio endpoints take GeoJSON: an oversized body is refused before any
+    # of it is parsed.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        path_prefix=f"{API_PREFIX}/predios",
+        max_bytes=max_geojson_bytes,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.cors_allowed_origins,

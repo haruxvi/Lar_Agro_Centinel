@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.audit.events import AUTHORIZATION_DENIED
 from app.modules.audit.models import AuditLog
+from app.modules.predios.models import Predio
 from app.modules.users.models import User, UserPredioRole, UserRole
 from app.shared.config import get_settings
 from app.shared.db import get_session
@@ -34,6 +35,7 @@ from app.shared.security import (
     create_access_token,
     create_challenge_token,
 )
+from tests.fixtures.predios import create_predio
 
 PREDIO_MINE = uuid.UUID("11111111-2222-3333-4444-555555555555")
 PREDIO_THEIRS = uuid.UUID("99999999-8888-7777-6666-555555555555")
@@ -251,6 +253,8 @@ def test_require_role_checks_the_role_itself(
 
 
 def _grant_predio(session: Session, user: User, predio_id: uuid.UUID, role: Role) -> None:
+    if session.get(Predio, predio_id) is None:
+        create_predio(session, user.id, predio_id=predio_id)
     session.add(UserPredioRole(user_id=user.id, predio_id=predio_id, role=role))
     session.flush()
 

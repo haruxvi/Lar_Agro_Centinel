@@ -109,8 +109,11 @@ class UserPredioRole(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    # Logical foreign key: the predios table arrives in Phase 2.
-    predio_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    # RESTRICT: a predio with people assigned to it can never be physically
+    # deleted. Predios are soft-deleted, so this only guards against accidents.
+    predio_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("predios.id", ondelete="RESTRICT"), index=True
+    )
     role: Mapped[Role] = mapped_column(Enum(Role, native_enum=False, length=32))
     granted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), default=None

@@ -16,6 +16,12 @@ from starlette.requests import Request
 from app.shared.config import get_settings
 
 REGISTRATION_RATE_LIMIT: Final = "3/hour"
+# Geometry writes run spatial queries; imports run them once per feature.
+GEOMETRY_WRITE_RATE_LIMIT: Final = "30/minute"
+GEOMETRY_VALIDATION_RATE_LIMIT: Final = "60/minute"
+GEOJSON_IMPORT_RATE_LIMIT: Final = "10/hour"
+# Assigning by email also answers "is this email registered?": keep it slow.
+MEMBERSHIP_WRITE_RATE_LIMIT: Final = "30/hour"
 
 
 def rate_limit_key(request: Request) -> str:
@@ -44,6 +50,26 @@ def two_factor_limit() -> str:
 def registration_limit() -> str:
     """Return the limit applied to self-registration."""
     return REGISTRATION_RATE_LIMIT
+
+
+def geometry_write_limit() -> str:
+    """Return the limit applied to endpoints that store a geometry."""
+    return GEOMETRY_WRITE_RATE_LIMIT
+
+
+def geometry_validation_limit() -> str:
+    """Return the limit applied to dry-run geometry validation."""
+    return GEOMETRY_VALIDATION_RATE_LIMIT
+
+
+def geojson_import_limit() -> str:
+    """Return the limit applied to bulk GeoJSON imports."""
+    return GEOJSON_IMPORT_RATE_LIMIT
+
+
+def membership_write_limit() -> str:
+    """Return the limit applied to granting and revoking predio roles."""
+    return MEMBERSHIP_WRITE_RATE_LIMIT
 
 
 def build_limiter() -> Limiter:

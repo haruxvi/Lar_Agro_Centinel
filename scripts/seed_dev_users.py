@@ -19,7 +19,10 @@ BACKEND_PATH = REPO_ROOT / "backend"
 if str(BACKEND_PATH) not in sys.path:
     sys.path.insert(0, str(BACKEND_PATH))
 
-from app.modules.auth.security import hash_password, validate_password_policy  # noqa: E402
+from app.modules.auth.security import (  # noqa: E402
+    hash_password,
+    validate_password_policy,
+)
 from app.modules.users.models import User, UserRole  # noqa: E402
 from app.shared.config import get_settings  # noqa: E402
 from app.shared.db import get_session_factory  # noqa: E402

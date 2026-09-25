@@ -83,6 +83,9 @@ jobs:
       - name: Verify frontend role constants are in sync
         run: python scripts/generate_frontend_roles.py --check
 
+      - name: Verify frontend enum constants are in sync
+        run: python scripts/generate_frontend_enums.py --check
+
       - name: Ruff (linting)
         run: ruff check backend/
 

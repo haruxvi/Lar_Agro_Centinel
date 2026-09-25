@@ -5,17 +5,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# System deps for geospatial libraries
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gdal-bin \
-    libgdal-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# No system GDAL or compiler: rasterio, fiona, pyogrio, shapely and pyproj ship
+# manylinux wheels with their own GDAL/GEOS/PROJ, and those bundled copies are
+# the ones loaded (verified with ldd). --only-binary makes a missing wheel fail
+# the build loudly instead of silently compiling against something else.
+# Geometry repair needs GEOS >= 3.10: app/shared/geo.py refuses to start below.
 
 WORKDIR /app
 
 COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+RUN pip install --no-cache-dir --only-binary=:all: \
+    -r requirements.txt -r requirements-dev.txt
 
 COPY backend ./backend
 

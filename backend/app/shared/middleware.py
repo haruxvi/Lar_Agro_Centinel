@@ -1,15 +1,18 @@
-"""ASGI middleware: security headers and per-request context."""
+"""ASGI middleware: security headers, per-request context and body size limits."""
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Final
 
+from starlette.datastructures import Headers
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.shared.logging import bind_request_context, clear_request_context, get_logger
 
@@ -78,3 +81,83 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         response.headers[REQUEST_ID_HEADER] = str(request_id)
         clear_request_context()
         return response
+
+
+class BodySizeLimitMiddleware:
+    """Refuse oversized request bodies under a path prefix with a 413.
+
+    Pure ASGI on purpose: the body is counted as it arrives, before FastAPI
+    parses a byte of JSON, and a lying or missing ``Content-Length`` does not
+    get around it. Bodies under the prefix are buffered, which is acceptable
+    because they are capped.
+    """
+
+    def __init__(
+        self, app: ASGIApp, *, path_prefix: str, max_bytes: Callable[[], int]
+    ) -> None:
+        """Wrap ``app``; ``max_bytes`` is read per request so settings apply."""
+        self.app = app
+        self.path_prefix = path_prefix
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Count the body and either replay it to the app or answer 413."""
+        if scope["type"] != "http" or not scope["path"].startswith(self.path_prefix):
+            await self.app(scope, receive, send)
+            return
+
+        limit = self.max_bytes()
+        declared = Headers(scope=scope).get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > limit:
+            await self._reject(int(declared), limit, send)
+            return
+
+        chunks: list[bytes] = []
+        size = 0
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > limit:
+                await self._reject(size, limit, send)
+                return
+            chunks.append(chunk)
+            more = message.get("more_body", False)
+
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay() -> Message:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+    @staticmethod
+    async def _reject(size: int, limit: int, send: Send) -> None:
+        payload = json.dumps(
+            {
+                "detail": {
+                    "error": "PayloadTooLargeError",
+                    "size_bytes": size,
+                    "limit_bytes": limit,
+                }
+            }
+        ).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})

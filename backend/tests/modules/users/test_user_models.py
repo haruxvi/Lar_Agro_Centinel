@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.users.models import User, UserPredioRole, UserRole
 from app.shared.roles import Role
+from tests.fixtures.predios import create_predio
 
 
 def _user(email: str = "propietaria@example.cl", rut: str | None = None) -> User:
@@ -119,7 +119,8 @@ def test_roles_can_be_scoped_to_different_predios(db_session: Session) -> None:
     db_session.add(user)
     db_session.flush()
 
-    predio_a, predio_b = uuid.uuid4(), uuid.uuid4()
+    predio_a = create_predio(db_session, user.id).id
+    predio_b = create_predio(db_session, user.id).id
     db_session.add(
         UserPredioRole(user_id=user.id, predio_id=predio_a, role=Role.APLICADOR)
     )
@@ -137,7 +138,7 @@ def test_same_role_on_same_predio_cannot_be_granted_twice(db_session: Session) -
     db_session.add(user)
     db_session.flush()
 
-    predio_id = uuid.uuid4()
+    predio_id = create_predio(db_session, user.id).id
     db_session.add(
         UserPredioRole(user_id=user.id, predio_id=predio_id, role=Role.BODEGUERO)
     )
@@ -154,8 +155,13 @@ def test_deleting_a_user_removes_their_grants(db_session: Session) -> None:
     db_session.add(user)
     db_session.flush()
     db_session.add(UserRole(user_id=user.id, role=Role.APICULTOR))
+    # Owned by someone else: an owner cannot be deleted while owning predios.
+    owner = _user(email="predio-owner@example.cl")
+    db_session.add(owner)
+    db_session.flush()
+    predio_id = create_predio(db_session, owner.id).id
     db_session.add(
-        UserPredioRole(user_id=user.id, predio_id=uuid.uuid4(), role=Role.APLICADOR)
+        UserPredioRole(user_id=user.id, predio_id=predio_id, role=Role.APLICADOR)
     )
     db_session.flush()
 

@@ -6,7 +6,12 @@ retention rules key on, so a typo would quietly lose a record.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final
+
+from app.shared.enums import AuditEventCategory, AuditEventSeverity
 
 # Accounts
 USER_REGISTERED: Final = "USER_REGISTERED"
@@ -36,3 +41,67 @@ AUTHORIZATION_DENIED: Final = "AUTHORIZATION_DENIED"
 ROLE_GRANTED: Final = "ROLE_GRANTED"
 ROLE_REVOKED: Final = "ROLE_REVOKED"
 ROLE_SWITCHED: Final = "ROLE_SWITCHED"
+
+# Predios. Details carry areas, bounding boxes and vertex counts, never a full
+# geometry: the audit log is not a geometry store (see KL-001).
+PREDIO_CREATED: Final = "PREDIO_CREATED"
+PREDIO_UPDATED: Final = "PREDIO_UPDATED"
+PREDIO_GEOMETRY_CHANGED: Final = "PREDIO_GEOMETRY_CHANGED"
+PREDIO_DELETED: Final = "PREDIO_DELETED"
+PREDIO_USER_ASSIGNED: Final = "PREDIO_USER_ASSIGNED"
+PREDIO_USER_UNASSIGNED: Final = "PREDIO_USER_UNASSIGNED"
+
+# Lotes
+LOTE_CREATED: Final = "LOTE_CREATED"
+LOTE_UPDATED: Final = "LOTE_UPDATED"
+LOTE_GEOMETRY_CHANGED: Final = "LOTE_GEOMETRY_CHANGED"
+LOTE_DELETED: Final = "LOTE_DELETED"
+LOTES_IMPORTED: Final = "LOTES_IMPORTED"
+
+# Automatic geometry repairs (predios and lotes). Details carry areas, delta,
+# ratio, threshold and bbox; never the geometry, original or repaired.
+GEOMETRY_REPAIRED: Final = "GEOMETRY_REPAIRED"
+GEOMETRY_REPAIR_ACCEPTED: Final = "GEOMETRY_REPAIR_ACCEPTED"
+GEOMETRY_REPAIR_REJECTED: Final = "GEOMETRY_REPAIR_REJECTED"
+
+
+@dataclass(frozen=True)
+class EventSpec:
+    """How an event type is recorded: declared once, not decided per call."""
+
+    category: AuditEventCategory
+    severity: AuditEventSeverity
+
+
+_INFO = AuditEventSeverity.INFO
+_WARNING = AuditEventSeverity.WARNING
+_DOMAIN = AuditEventCategory.DOMAIN
+_SECURITY = AuditEventCategory.SECURITY
+
+# Catalogue of the predios context, documented in docs/audit-events.md (a test
+# keeps both in sync). WARNING marks what cannot be undone from the audit
+# trail alone: a boundary overwritten (KL-001), a deletion, a change of who
+# may act on a predio.
+PREDIO_EVENTS: Final[Mapping[str, EventSpec]] = MappingProxyType(
+    {
+        PREDIO_CREATED: EventSpec(_DOMAIN, _INFO),
+        PREDIO_UPDATED: EventSpec(_DOMAIN, _INFO),
+        PREDIO_GEOMETRY_CHANGED: EventSpec(_DOMAIN, _WARNING),
+        PREDIO_DELETED: EventSpec(_DOMAIN, _WARNING),
+        PREDIO_USER_ASSIGNED: EventSpec(_SECURITY, _WARNING),
+        PREDIO_USER_UNASSIGNED: EventSpec(_SECURITY, _WARNING),
+        LOTE_CREATED: EventSpec(_DOMAIN, _INFO),
+        LOTE_UPDATED: EventSpec(_DOMAIN, _INFO),
+        LOTE_GEOMETRY_CHANGED: EventSpec(_DOMAIN, _WARNING),
+        LOTE_DELETED: EventSpec(_DOMAIN, _WARNING),
+        LOTES_IMPORTED: EventSpec(_DOMAIN, _INFO),
+        # Under the threshold, accepted without asking: routine.
+        GEOMETRY_REPAIRED: EventSpec(_DOMAIN, _INFO),
+        # Someone explicitly stored a repair the system found suspicious: it
+        # must be searchable on its own, apart from routine repairs.
+        GEOMETRY_REPAIR_ACCEPTED: EventSpec(_DOMAIN, _WARNING),
+        # Returned for confirmation. Many in a row from one user means the
+        # threshold is fighting them: that is what this event is for.
+        GEOMETRY_REPAIR_REJECTED: EventSpec(_DOMAIN, _INFO),
+    }
+)

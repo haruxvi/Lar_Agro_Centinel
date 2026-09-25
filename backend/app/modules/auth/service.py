@@ -16,6 +16,17 @@ from app.modules.audit import events
 from app.modules.audit.service import AuditService
 from app.modules.auth import security as passwords
 from app.modules.auth import two_factor
+from app.modules.auth.exceptions import (
+    AccountLockedError,
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    InvalidRefreshTokenError,
+    InvalidTwoFactorCodeError,
+    RoleNotGrantedError,
+    TwoFactorLockedError,
+    TwoFactorNotEnrolledError,
+    TwoFactorRequiredForRoleError,
+)
 from app.modules.auth.models import RefreshToken, UserTwoFactor
 from app.modules.auth.repository import RefreshTokenRepository, TwoFactorRepository
 from app.modules.users.models import User
@@ -38,46 +49,6 @@ LOGIN_LOCKOUT_DURATION: Final = timedelta(minutes=15)
 CHALLENGE_TOKEN_TTL: Final = timedelta(minutes=5)
 
 _ROLE_ORDER: Final = {role: index for index, role in enumerate(Role)}
-
-
-class AuthError(Exception):
-    """Base class for authentication failures."""
-
-
-class InvalidCredentialsError(AuthError):
-    """Wrong email or password. Deliberately indistinguishable to the caller."""
-
-
-class AccountLockedError(AuthError):
-    """Too many failed attempts; the account is temporarily locked."""
-
-
-class EmailAlreadyRegisteredError(AuthError):
-    """That email already has an account."""
-
-
-class InvalidTwoFactorCodeError(AuthError):
-    """The submitted second factor did not verify."""
-
-
-class TwoFactorLockedError(AuthError):
-    """Too many failed second-factor attempts."""
-
-
-class TwoFactorNotEnrolledError(AuthError):
-    """The account has no usable second factor."""
-
-
-class TwoFactorRequiredForRoleError(AuthError):
-    """One of the caller's roles makes 2FA mandatory, so it cannot be disabled."""
-
-
-class InvalidRefreshTokenError(AuthError):
-    """The refresh token is unknown, expired or already revoked."""
-
-
-class RoleNotGrantedError(AuthError):
-    """The caller does not hold the role they asked to act under."""
 
 
 class LoginStatus(StrEnum):

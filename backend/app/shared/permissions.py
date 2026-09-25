@@ -167,6 +167,17 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
 }
 
 
+# Roles whose *global* grant applies to every predio. Oversight only: a test
+# enforces that none of them holds a permission that writes. Any other role
+# reaches a predio solely through a grant on that predio.
+GLOBAL_SCOPE_ROLES: frozenset[Role] = frozenset({Role.AUDITOR})
+
+
+def cross_tenant_roles(global_roles: Iterable[Role]) -> frozenset[Role]:
+    """Return the global roles that apply across every predio."""
+    return frozenset(role for role in global_roles if role in GLOBAL_SCOPE_ROLES)
+
+
 @runtime_checkable
 class PredioGrant(Protocol):
     """A role granted to a user on one predio.
@@ -224,10 +235,13 @@ def can_access_predio(
 
     Fail-closed: a user with no grant on that predio is denied, which is what
     stops one tenant from reaching another's data by changing an id in the URL.
-    A global role (the auditor's read-only access, for instance) applies
-    everywhere and is checked separately.
+
+    Global grants reach every predio only for the roles in
+    ``GLOBAL_SCOPE_ROLES``. Any other global role (a PROPIETARIO allowed to
+    create predios, say) is ignored here: it says nothing about predios the
+    user holds no grant on.
     """
-    if has_permission(global_roles, permission):
+    if has_permission(cross_tenant_roles(global_roles), permission):
         return True
     return has_permission(roles_on_predio(predio_grants, predio_id, now=now), permission)
 

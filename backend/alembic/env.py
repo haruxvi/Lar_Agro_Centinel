@@ -14,11 +14,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-# Importing the model modules registers their tables on the shared metadata,
-# which is what autogenerate compares against the live database.
-from app.modules.audit import models as audit_models  # noqa: E402, F401
-from app.modules.auth import models as auth_models  # noqa: E402, F401
-from app.modules.users import models as users_models  # noqa: E402, F401
+# Importing the registry puts every table on the shared metadata, which is
+# what autogenerate compares against the live database.
+import app.models  # noqa: E402, F401
 from app.shared.config import get_settings  # noqa: E402
 from app.shared.db import Base  # noqa: E402
 

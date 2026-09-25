@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.shared.permissions import (
+    GLOBAL_SCOPE_ROLES,
     ROLE_PERMISSIONS,
     Permission,
     accessible_predio_ids,
@@ -222,6 +223,38 @@ def test_a_global_role_still_cannot_write() -> None:
         )
         is False
     )
+
+
+@pytest.mark.parametrize(
+    "role", sorted(set(Role) - GLOBAL_SCOPE_ROLES, key=lambda role: role.value)
+)
+def test_a_global_grant_outside_the_oversight_roles_reaches_no_predio(
+    role: Role,
+) -> None:
+    # A global PROPIETARIO (needed to create a first predio) must not see,
+    # edit or delete predios of other tenants: that would be an IDOR.
+    reachable = [
+        permission
+        for permission in Permission
+        if can_access_predio([], PREDIO_B, permission, global_roles=[role])
+    ]
+    assert reachable == []
+
+
+def test_oversight_roles_hold_no_write_permission() -> None:
+    oversight = {
+        Permission.PREDIO_VIEW,
+        Permission.ANALYSIS_VIEW,
+        Permission.CAPTURE_VIEW,
+        Permission.INVENTORY_VIEW,
+        Permission.USER_VIEW,
+        Permission.AUDIT_VIEW_OWN,
+        Permission.AUDIT_VIEW_PREDIO,
+        Permission.AUDIT_VIEW_ALL,
+        Permission.AUDIT_EXPORT,
+    }
+    for role in GLOBAL_SCOPE_ROLES:
+        assert ROLE_PERMISSIONS[role] <= oversight, role
 
 
 def test_roles_from_different_predios_do_not_leak() -> None:

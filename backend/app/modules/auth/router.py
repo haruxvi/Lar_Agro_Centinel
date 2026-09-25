@@ -9,6 +9,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
+from app.modules.auth.exceptions import (
+    AccountLockedError,
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    InvalidRefreshTokenError,
+    InvalidTwoFactorCodeError,
+    RoleNotGrantedError,
+    TwoFactorLockedError,
+    TwoFactorNotEnrolledError,
+    TwoFactorRequiredForRoleError,
+)
 from app.modules.auth.repository import TwoFactorRepository
 from app.modules.auth.schema import (
     AccessTokenResponse,
@@ -28,19 +39,10 @@ from app.modules.auth.schema import (
     TwoFactorVerifyRequest,
 )
 from app.modules.auth.service import (
-    AccountLockedError,
     AuthService,
-    EmailAlreadyRegisteredError,
-    InvalidCredentialsError,
-    InvalidRefreshTokenError,
-    InvalidTwoFactorCodeError,
     IssuedTokens,
     LoginStatus,
     RequestContext,
-    RoleNotGrantedError,
-    TwoFactorLockedError,
-    TwoFactorNotEnrolledError,
-    TwoFactorRequiredForRoleError,
 )
 from app.modules.users.repository import UserRepository, UserRoleRepository
 from app.modules.users.schema import UserRead

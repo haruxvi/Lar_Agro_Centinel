@@ -92,3 +92,24 @@ class Environment(StrEnum):
     DEVELOPMENT = "development"
     STAGING = "staging"
     PRODUCTION = "production"
+
+
+class LoteType(StrEnum):
+    """Kind of subdivision inside a predio."""
+
+    CUARTEL = "CUARTEL"  # vineyard or orchard block
+    POTRERO = "POTRERO"  # grazing paddock
+    PARCELA = "PARCELA"  # annual crop plot
+    INVERNADERO = "INVERNADERO"
+    BODEGA_AREA = "BODEGA_AREA"  # infrastructure zone
+    OTRO = "OTRO"
+
+
+LOTE_TYPE_LABELS: dict[LoteType, str] = {
+    LoteType.CUARTEL: "Cuartel",
+    LoteType.POTRERO: "Potrero",
+    LoteType.PARCELA: "Parcela",
+    LoteType.INVERNADERO: "Invernadero",
+    LoteType.BODEGA_AREA: "Área de bodega",
+    LoteType.OTRO: "Otro",
+}

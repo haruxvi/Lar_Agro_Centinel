@@ -100,6 +100,21 @@ class Settings(BaseSettings):
     sentinel_client_id: SecretStr | None = None
     sentinel_client_secret: SecretStr | None = None
 
+    # Geospatial (see docs/decisions/ADR-003-geospatial-model.md)
+    geo_srid: int = 4326
+    geo_max_polygon_vertices: int = 10_000
+    geo_max_geojson_size_kb: int = 2048
+    # Sanity bounds against capture errors (swapped coordinates produce absurd
+    # polygons), not business rules.
+    geo_min_predio_area_m2: float = 100.0  # 0.01 ha
+    geo_max_predio_area_m2: float = 500_000_000.0  # 50.000 ha
+    geo_lote_containment_tolerance_m: float = 5.0
+    # An automatic repair is accepted without confirmation when its area change
+    # is under EITHER bound: the ratio protects large geometries, the absolute
+    # floor forgives digitising noise on small ones. See assess_repair().
+    geo_repair_max_area_change_ratio: float = 0.01  # 1%
+    geo_repair_ignore_below_m2: float = 50.0
+
     # Storage
     storage_path: str = "./data"
     max_upload_size_mb: int = 50

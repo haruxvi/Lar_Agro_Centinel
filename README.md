@@ -101,6 +101,40 @@ bus rather than direct calls. This keeps extraction into separate services a
 mechanical change if scale ever requires it, without paying distributed-system
 costs today.
 
+Architectural invariants are documented in [CLAUDE.md](CLAUDE.md)
+and enforced by tests in `backend/tests/architecture/`.
+Deliberate limitations are tracked in
+[docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
+Audit event types, their severity and what they record are listed in
+[docs/audit-events.md](docs/audit-events.md).
+Design decisions live in [docs/decisions/](docs/decisions/).
+
+---
+
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| 0 | Infrastructure, CI, quality gates | Done |
+| 1 | Authentication, 2FA, roles, append-only audit log | Done |
+| 2 | Predios and lotes: PostGIS geometry, validation and repair, user assignment | Done |
+| 3 | Satellite analysis (NDVI) | Next |
+
+Phase 2 design: [ADR-003](docs/decisions/ADR-003-geospatial-model.md).
+
+### Development data
+
+With the stack running and migrations applied:
+
+```bash
+SEED_PASSWORD='...' python scripts/seed_dev_users.py
+python scripts/seed_dev_predios.py
+```
+
+The first creates one user per role; the second creates demo predios and
+lotes in Colchagua and Maipo, with invented boundaries and names marked
+"(demo)". Both refuse to run outside development and are safe to re-run.
+
 ---
 
 ## Copyright and usage
