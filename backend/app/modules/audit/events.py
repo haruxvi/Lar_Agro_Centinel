@@ -64,6 +64,10 @@ GEOMETRY_REPAIRED: Final = "GEOMETRY_REPAIRED"
 GEOMETRY_REPAIR_ACCEPTED: Final = "GEOMETRY_REPAIR_ACCEPTED"
 GEOMETRY_REPAIR_REJECTED: Final = "GEOMETRY_REPAIR_REJECTED"
 
+# Sentinel Hub (Phase 3). Catalogued with the rest of the analysis events.
+SENTINEL_QUOTA_EXCEEDED: Final = "SENTINEL_QUOTA_EXCEEDED"
+SENTINEL_CIRCUIT_OPEN: Final = "SENTINEL_CIRCUIT_OPEN"
+
 
 @dataclass(frozen=True)
 class EventSpec:
@@ -103,5 +107,45 @@ PREDIO_EVENTS: Final[Mapping[str, EventSpec]] = MappingProxyType(
         # Returned for confirmation. Many in a row from one user means the
         # threshold is fighting them: that is what this event is for.
         GEOMETRY_REPAIR_REJECTED: EventSpec(_DOMAIN, _INFO),
+    }
+)
+
+# Satellite analysis (Phase 3). Details carry scene date, cloud cover, PU,
+# reflectance percentiles, anomaly counts and durations; never rasters and
+# never full geometries.
+ANALYSIS_REQUESTED: Final = "ANALYSIS_REQUESTED"
+ANALYSIS_STARTED: Final = "ANALYSIS_STARTED"
+ANALYSIS_COMPLETED: Final = "ANALYSIS_COMPLETED"
+ANALYSIS_FAILED: Final = "ANALYSIS_FAILED"
+ANALYSIS_NO_SUITABLE_SCENE: Final = "ANALYSIS_NO_SUITABLE_SCENE"
+ANALYSIS_RESOLVED_TO_EXISTING: Final = "ANALYSIS_RESOLVED_TO_EXISTING"
+ANALYSIS_FORCED_RECOMPUTE: Final = "ANALYSIS_FORCED_RECOMPUTE"
+ANOMALY_DETECTED: Final = "ANOMALY_DETECTED"
+ANOMALY_REVIEWED: Final = "ANOMALY_REVIEWED"
+RASTER_DOWNLOADED: Final = "RASTER_DOWNLOADED"
+
+_SYSTEM = AuditEventCategory.SYSTEM
+_ERROR = AuditEventSeverity.ERROR
+
+ANALYSIS_EVENTS: Final[Mapping[str, EventSpec]] = MappingProxyType(
+    {
+        ANALYSIS_REQUESTED: EventSpec(_DOMAIN, _INFO),
+        ANALYSIS_STARTED: EventSpec(_DOMAIN, _INFO),
+        ANALYSIS_COMPLETED: EventSpec(_DOMAIN, _INFO),
+        # A system failure, unlike a cloudy sky.
+        ANALYSIS_FAILED: EventSpec(_DOMAIN, _WARNING),
+        ANALYSIS_NO_SUITABLE_SCENE: EventSpec(_DOMAIN, _INFO),
+        # The scene already had a result: the request resolved to it, at no
+        # download cost.
+        ANALYSIS_RESOLVED_TO_EXISTING: EventSpec(_DOMAIN, _INFO),
+        # A result was superseded: quota spent twice on one scene, and its
+        # reviewed anomalies stay behind on the old analysis.
+        ANALYSIS_FORCED_RECOMPUTE: EventSpec(_DOMAIN, _WARNING),
+        ANOMALY_DETECTED: EventSpec(_DOMAIN, _INFO),
+        ANOMALY_REVIEWED: EventSpec(_DOMAIN, _INFO),
+        RASTER_DOWNLOADED: EventSpec(_DOMAIN, _INFO),
+        # The budget is gone: nothing more can run this month.
+        SENTINEL_QUOTA_EXCEEDED: EventSpec(_SYSTEM, _ERROR),
+        SENTINEL_CIRCUIT_OPEN: EventSpec(_SYSTEM, _WARNING),
     }
 )

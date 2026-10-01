@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "interval": {"from": "2026-09-10T00:00:00Z", "to": "2026-09-11T00:00:00Z"},
+      "outputs": {"cloud": {"bands": {"B0": {"stats": {
+        "min": 0.0, "max": 0.0, "mean": 0.0, "stDev": 0.0,
+        "sampleCount": 300, "noDataCount": 0}}}}}
+    },
+    {
+      "interval": {"from": "2026-09-15T00:00:00Z", "to": "2026-09-16T00:00:00Z"},
+      "outputs": {"cloud": {"bands": {"B0": {"stats": {
+        "min": 0.0, "max": 1.0, "mean": 0.12, "stDev": 0.32,
+        "sampleCount": 300, "noDataCount": 0}}}}}
+    },
+    {
+      "interval": {"from": "2026-09-20T00:00:00Z", "to": "2026-09-21T00:00:00Z"},
+      "outputs": {"cloud": {"bands": {"B0": {"stats": {
+        "min": 0.0, "max": 1.0, "mean": 0.85, "stDev": 0.36,
+        "sampleCount": 300, "noDataCount": 0}}}}}
+    }
+  ],
+  "status": "OK"
+}

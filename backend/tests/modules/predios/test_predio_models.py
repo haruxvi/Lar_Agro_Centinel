@@ -311,6 +311,15 @@ def test_the_runtime_role_can_manage_predios_and_lotes(app_session: Session) -> 
     app_session.flush()
 
 
+# One literal statement per table: no SQL is assembled from strings.
+_SET_DELTA_WITHOUT_FLAG = {
+    "predios": text(
+        "UPDATE predios SET geometry_repair_area_delta_m2 = 12.5 WHERE id = :id"
+    ),
+    "lotes": text("UPDATE lotes SET geometry_repair_area_delta_m2 = 12.5 WHERE id = :id"),
+}
+
+
 @pytest.mark.parametrize("table", ["predios", "lotes"])
 def test_a_repair_delta_requires_the_repair_flag(
     db_session: Session, make_predio: MakePredio, make_lote: MakeLote, table: str
@@ -318,13 +327,7 @@ def test_a_repair_delta_requires_the_repair_flag(
     predio = make_predio()
     row_id = predio.id if table == "predios" else make_lote(predio).id
     with pytest.raises(IntegrityError):
-        db_session.execute(
-            text(
-                f"UPDATE {table} SET geometry_repair_area_delta_m2 = 12.5 "  # noqa: S608 - fixed table names
-                "WHERE id = :id"
-            ),
-            {"id": row_id},
-        )
+        db_session.execute(_SET_DELTA_WITHOUT_FLAG[table], {"id": row_id})
 
 
 def test_new_geometries_are_not_marked_as_repaired(make_predio: MakePredio) -> None:

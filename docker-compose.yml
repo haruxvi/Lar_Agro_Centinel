@@ -56,6 +56,8 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app/backend
+      # Shared with the worker: it writes the rasters, the API serves them.
+      - rasters:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,6 +66,32 @@ services:
     networks:
       - lar_network
     command: uvicorn app.main:app --app-dir backend --host 0.0.0.0 --reload --reload-dir backend
+
+  # Runs analyses outside the HTTP request (Sentinel Hub takes 10-60 s).
+  # Same image as the backend, different command.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: lar_worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://lar_app:lar_app_password@postgres:5432/lar_agro_centinel
+      DATABASE_MIGRATION_URL: postgresql+psycopg://lar_owner:lar_owner_password@postgres:5432/lar_agro_centinel
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app/backend
+    volumes:
+      - ./backend:/app/backend
+      - rasters:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - lar_network
+    command: arq app.modules.analysis.worker.WorkerSettings
 
   frontend:
     build:
@@ -90,6 +118,9 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  # Local raster storage (STORAGE_BACKEND=local). Not for production on an
+  # ephemeral host: see KL-005.
+  rasters:
 
 networks:
   lar_network:

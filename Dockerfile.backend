@@ -11,6 +11,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # the build loudly instead of silently compiling against something else.
 # Geometry repair needs GEOS >= 3.10: app/shared/geo.py refuses to start below.
 
+# The one system library the wheels do not bundle: GDAL inside the rasterio
+# and fiona wheels links against libexpat. It used to arrive with gdal-bin;
+# without it `import rasterio` fails (found when the worker first imported it).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt requirements-dev.txt ./
@@ -20,7 +27,11 @@ RUN pip install --no-cache-dir --only-binary=:all: \
 COPY backend ./backend
 
 # Run as an unprivileged user.
-RUN useradd --create-home --uid 10001 app && chown -R app:app /app
+# /app/data exists before the volume is mounted so the volume inherits the
+# app user's ownership; otherwise the worker could not write rasters.
+RUN mkdir -p /app/data/rasters \
+    && useradd --create-home --uid 10001 app \
+    && chown -R app:app /app
 USER app
 
 EXPOSE 8000

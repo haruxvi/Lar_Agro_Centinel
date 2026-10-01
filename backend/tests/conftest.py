@@ -29,6 +29,37 @@ _TEST_ENVIRONMENT = {
 for _key, _value in _TEST_ENVIRONMENT.items():
     os.environ.setdefault(_key, _value)
 
+# --- Sentinel Hub: no test may ever reach the real API ---------------------------
+# Processing Units are a finite monthly quota: a suite that spends them leaves
+# the project unable to work. Two layers:
+#
+# Layer 2 (the alarm) records which credentials the process was STARTED with,
+# before layer 1 blanks them, so test_sentinel_guard can fail loudly in CI.
+# Both the names the app reads (SENTINEL_*) and the conventional Sentinel Hub
+# ones (SH_*), which is how a CI secret would most likely be injected.
+SENTINEL_CREDENTIAL_VARIABLES = (
+    "SENTINEL_CLIENT_ID",
+    "SENTINEL_CLIENT_SECRET",
+    "SH_CLIENT_ID",
+    "SH_CLIENT_SECRET",
+)
+_SENTINEL_VARIABLES_IN_PROCESS_ENV = tuple(
+    name for name in SENTINEL_CREDENTIAL_VARIABLES if os.environ.get(name, "").strip()
+)
+# Layer 1 (the protection): blank them before any settings are built.
+# Environment variables outrank .env in pydantic-settings, so these empty
+# values also override credentials in a developer's .env: with credentials
+# there, the suite passes and never uses them.
+for _name in SENTINEL_CREDENTIAL_VARIABLES:
+    os.environ[_name] = ""
+
+
+@pytest.fixture
+def sentinel_variables_in_process_env() -> tuple[str, ...]:
+    """Return the Sentinel credential variables the process was started with."""
+    return _SENTINEL_VARIABLES_IN_PROCESS_ENV
+
+
 # Keep the wait short: when PostgreSQL is down every integration test would
 # otherwise pay the full TCP timeout before skipping.
 _CONNECT_TIMEOUT_SECONDS = 3

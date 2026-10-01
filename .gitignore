@@ -29,3 +29,10 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Claude Code / AI agent settings (contienen paths absolutos)
+.claude/settings.json
+.claude/settings.local.json
+
+# Local raster storage and any other runtime data (never commit rasters)
+data/

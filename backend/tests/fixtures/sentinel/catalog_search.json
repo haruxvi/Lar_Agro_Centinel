@@ -1,0 +1,32 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "S2B_MSIL2A_20260920T143729_N0511_R096_T19HCC_20260920T180112",
+      "properties": {"datetime": "2026-09-20T14:46:12Z", "eo:cloud_cover": 12.4}
+    },
+    {
+      "type": "Feature",
+      "id": "S2A_MSIL2A_20260915T143731_N0511_R096_T19HCC_20260915T191008",
+      "properties": {"datetime": "2026-09-15T14:46:15Z", "eo:cloud_cover": 3.1}
+    },
+    {
+      "type": "Feature",
+      "id": "S2A_MSIL2A_20260915T143731_N0511_R096_T19HCD_20260915T191008",
+      "properties": {"datetime": "2026-09-15T14:46:02Z", "eo:cloud_cover": 5.0}
+    },
+    {
+      "type": "Feature",
+      "id": "S2B_MSIL2A_20260910T143729_N0511_R096_T19HCC_20260910T175544",
+      "properties": {"datetime": "2026-09-10T14:46:20Z", "eo:cloud_cover": 0.0}
+    },
+    {
+      "type": "Feature",
+      "id": "S2A_MSIL2A_20260905T143731_N0511_R096_T19HCC_20260905T190101",
+      "properties": {"datetime": "2026-09-05T14:46:18Z", "eo:cloud_cover": 100.0}
+    }
+  ],
+  "links": [],
+  "context": {"limit": 100, "returned": 5}
+}

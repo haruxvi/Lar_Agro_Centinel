@@ -11,6 +11,7 @@ from slowapi.middleware import SlowAPIMiddleware
 # Registers every table so cross-module foreign keys resolve at runtime.
 from app import models as _registered_models  # noqa: F401
 from app.modules.analysis import router as analysis_router
+from app.modules.analysis.availability import analysis_available
 from app.modules.audit import router as audit_router
 from app.modules.auth import router as auth_router
 from app.modules.beekeepers import router as beekeepers_router
@@ -28,13 +29,14 @@ from app.modules.users import router as users_router
 from app.modules.warehouses import router as warehouses_router
 from app.shared.config import Settings, get_settings
 from app.shared.geo import max_geojson_bytes
-from app.shared.logging import configure_logging
+from app.shared.logging import configure_logging, get_logger
 from app.shared.middleware import (
     BodySizeLimitMiddleware,
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
 from app.shared.rate_limit import limiter
+from app.shared.storage import build_storage
 
 API_PREFIX = "/api/v1"
 META_PREFIX = "/api"
@@ -61,6 +63,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Build and configure the ASGI application."""
     resolved = settings or get_settings()
     configure_logging(resolved)
+    # Built now so a backend that cannot work (S3, not implemented yet) stops
+    # the process at startup instead of failing the first analysis. The local
+    # backend has no side effects until its first write.
+    build_storage(resolved)
+    if not analysis_available(resolved):
+        # Not an error: the rest of the system runs without satellite access.
+        get_logger("app.startup").warning(
+            "analysis_unavailable",
+            reason="Sentinel Hub credentials are not configured",
+        )
 
     app = FastAPI(
         title=resolved.app_name,

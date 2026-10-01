@@ -55,7 +55,7 @@ Verification on the final set: `pip check` reports no broken requirements and
   hash bounded; note that **each concurrent login holds `argon2_memory_cost` of RAM**,
   so 128 MiB × concurrency must fit the host. Re-run the benchmark on the production
   host: these numbers do not transfer.
-- **opencv-python** stays on the 4.10 line as pinned; the latest release is 5.0,
+- **opencv-python-headless** (formerly opencv-python, see *Changes after Phase 0*) stays on the 4.10 line as pinned; the latest release is 5.0,
   a major version change to evaluate when computer-vision code is written.
 
 ## Frontend
@@ -101,7 +101,16 @@ Verification: `npm audit` reports 0 vulnerabilities; `npm run lint`,
 - **CodeQL on a private repository** requires GitHub Code Security (Advanced
   Security) to be enabled for the repository. Without it, `codeql.yml` fails at the
   upload step.
-- The backend image installs `gdal-bin`, `libgdal-dev` and `build-essential` as the
-  prompt requests. Per ADR-001 every geospatial package installs from wheels that
-  bundle GDAL, so these system packages are likely unnecessary and could be removed
-  to shrink the image and speed up builds.
+- ~~The backend image installs `gdal-bin`, `libgdal-dev` and `build-essential`~~ —
+  resolved at the end of Phase 2: removed, and the image now installs wheels only
+  (`--only-binary=:all:`). rasterio, fiona and pyogrio were verified with `ldd` to
+  load the GDAL bundled in their wheels, and the full test suite passes in the image.
+
+## Changes after Phase 0
+
+| When | Package | Change | Reason |
+|---|---|---|---|
+| Phase 2 close (2026-10-01) | PyJWT | 2.14.0 → 2.15.0 | CVE-2026-101918: a deeply nested JWT payload raised an uncaught `RecursionError` when decoding without signature verification. Our code always verifies the signature first, so the path was not reachable, but the release is the fix and keeps `pip-audit` at zero. |
+| Phase 3 (2026-10-01) | sentinelhub | 3.11.5 → **removed** | The Sentinel Hub client is written on `httpx`. sentinelhub-py hides exactly what Phase 3 must control (token cached in Redis with a single refresh, Processing Units read from response headers, backoff, `Retry-After`, circuit breaker) and is synchronous, which would force a thread pool per call inside the async worker. It was never imported. A declared but unused dependency is unaudited attack surface, noise in `pip-audit` and build time; it already broke CI once with a pin that did not exist on PyPI. |
+| Phase 3 (2026-10-01) | scipy | transitive → **declared**, 1.18.1 | Used directly for anomaly clustering (`scipy.ndimage.label` and per-cluster means). It was already installed through scikit-learn; declaring it removes a dependency the manifest did not admit to. `pip-audit` reports no known vulnerabilities for 1.18.1. |
+| Phase 3 (2026-10-01) | opencv-python → **opencv-python-headless** | same version, 4.10.0.84 | `opencv-python` links against `libGL.so.1` for its GUI functions (`imshow` and the like), so `import cv2` fails in our image: `python:3.12-slim` has no libGL, and it will not get one, since a server that never opens a window should not carry an X/OpenGL stack and its CVE surface. The headless build is the same library without the GUI module, published by the same project for exactly this case. Verified: the 4.10.0.84 release exists on PyPI, is not yanked, ships an abi3 manylinux x86_64 wheel (Python 3.12 covered), and `pip-audit` reports no known vulnerabilities. The two packages both provide `cv2` and must never be installed together. |

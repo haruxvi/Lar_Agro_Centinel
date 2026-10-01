@@ -67,3 +67,33 @@ def test_cli_check_exits_zero_when_in_sync() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_every_shared_enum_is_fully_labelled(generator: ModuleType) -> None:
+    for shared in generator.SHARED_ENUMS:
+        assert set(shared.labels) == set(shared.enum), shared.type_name
+        assert all(label.strip() for label in shared.labels.values()), shared.type_name
+
+
+def test_output_contains_every_shared_enum(generator: ModuleType) -> None:
+    rendered = generator.render()
+    for shared in generator.SHARED_ENUMS:
+        assert f"export const {shared.values_name} = {{" in rendered
+        assert f"export type {shared.type_name} = " in rendered
+        assert (
+            f"export const {shared.labels_name}: Record<{shared.type_name}, string>"
+            in (rendered)
+        )
+        for member in shared.enum:
+            assert f"  {member.name}: '{member.value}'," in rendered
+
+
+def test_the_phase_3_enums_are_exported(generator: ModuleType) -> None:
+    exported = {shared.type_name for shared in generator.SHARED_ENUMS}
+    assert exported >= {
+        "AnalysisType",
+        "AnalysisStatus",
+        "AnomalySeverity",
+        "AnomalyReviewStatus",
+        "LoteStatsExclusion",
+    }

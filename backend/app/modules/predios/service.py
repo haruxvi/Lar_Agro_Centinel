@@ -234,7 +234,8 @@ def _repair_columns(report: GeometryReport) -> dict[str, object]:
 
 def _repair_details(report: GeometryReport) -> dict[str, object]:
     """Audit details of a repair: figures and bbox, never the geometry."""
-    assert report.repair is not None  # noqa: S101 - callers check first
+    if report.repair is None:
+        raise ValueError("_repair_details needs a repaired geometry")
     return {
         **report.repair.as_details(),
         "bbox": report.bbox,

@@ -14,7 +14,8 @@ from shapely.geometry import Point
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.modules.predios.models import Predio
+from app.modules.predios.models import Lote, Predio
+from app.shared.enums import LoteType
 from app.shared.geo import geojson_to_wkb, validate_geojson_geometry
 from tests.fixtures import geometries as g
 
@@ -64,3 +65,28 @@ def create_predio(
     session.add(predio)
     session.flush()
     return predio
+
+
+def create_lote(
+    session: Session,
+    predio: Predio,
+    *,
+    geojson: dict[str, Any] | None = None,
+    name: str | None = None,
+    lote_type: LoteType = LoteType.CUARTEL,
+) -> Lote:
+    """Insert a lote of ``predio`` and return it (the predio's SW quarter by default)."""
+    shape_data = geojson or g.square(size=g.STEP / 2)
+    area, centroid = derive_area_and_centroid(session, shape_data)
+    lote = Lote(
+        predio_id=predio.id,
+        created_by_user_id=predio.owner_user_id,
+        name=name or f"Cuartel {uuid.uuid4().hex[:6]}",
+        lote_type=lote_type,
+        geometry=geojson_to_wkb(validate_geojson_geometry(shape_data)),
+        centroid=from_shape(centroid, srid=4326),
+        area_m2=area,
+    )
+    session.add(lote)
+    session.flush()
+    return lote

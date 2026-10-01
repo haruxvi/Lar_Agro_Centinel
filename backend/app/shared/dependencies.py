@@ -96,9 +96,8 @@ def get_current_user(
         raise _UNAUTHORIZED
 
     user = UserRepository(session).get_by_id(payload.sub)
-    if not _is_usable(user):
+    if user is None or not _is_usable(user):
         raise _UNAUTHORIZED
-    assert user is not None  # noqa: S101 - narrowed by _is_usable
 
     return CurrentUser(
         id=user.id,

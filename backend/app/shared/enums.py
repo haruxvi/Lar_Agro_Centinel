@@ -113,3 +113,92 @@ LOTE_TYPE_LABELS: dict[LoteType, str] = {
     LoteType.BODEGA_AREA: "Área de bodega",
     LoteType.OTRO: "Otro",
 }
+
+
+# --- Satellite analysis (Phase 3) ------------------------------------------------
+
+
+class AnalysisType(StrEnum):
+    """Index computed by an analysis. NDVI only, until others exist."""
+
+    NDVI = "NDVI"
+
+
+ANALYSIS_TYPE_LABELS: dict[AnalysisType, str] = {
+    AnalysisType.NDVI: "NDVI",
+}
+
+
+class AnalysisStatus(StrEnum):
+    """Lifecycle of an analysis.
+
+    NO_SUITABLE_SCENE is terminal and distinct from FAILED on purpose: a
+    cloudy sky is a condition of the world, not a system error, and mixing
+    them would hide real failures behind a run of bad weather.
+    """
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    NO_SUITABLE_SCENE = "NO_SUITABLE_SCENE"
+    # The scene already had a completed analysis: not an error, the result
+    # exists. resolved_to_analysis_id points at it.
+    DUPLICATE_SCENE = "DUPLICATE_SCENE"
+
+
+ANALYSIS_STATUS_LABELS: dict[AnalysisStatus, str] = {
+    AnalysisStatus.PENDING: "Pendiente",
+    AnalysisStatus.RUNNING: "En proceso",
+    AnalysisStatus.COMPLETED: "Completado",
+    AnalysisStatus.FAILED: "Fallido",
+    AnalysisStatus.NO_SUITABLE_SCENE: "Sin escena utilizable",
+    AnalysisStatus.DUPLICATE_SCENE: "Escena ya analizada",
+}
+
+
+class AnomalySeverity(StrEnum):
+    """How strongly an anomaly stands out within its lote (provisional cuts)."""
+
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+ANOMALY_SEVERITY_LABELS: dict[AnomalySeverity, str] = {
+    AnomalySeverity.LOW: "Baja",
+    AnomalySeverity.MEDIUM: "Media",
+    AnomalySeverity.HIGH: "Alta",
+}
+
+
+class AnomalyReviewStatus(StrEnum):
+    """An agronomist's verdict on an anomaly, which is a hypothesis until then."""
+
+    CONFIRMED = "CONFIRMED"
+    DISMISSED = "DISMISSED"
+    NEEDS_FIELD_CHECK = "NEEDS_FIELD_CHECK"
+
+
+ANOMALY_REVIEW_STATUS_LABELS: dict[AnomalyReviewStatus, str] = {
+    AnomalyReviewStatus.CONFIRMED: "Confirmada",
+    AnomalyReviewStatus.DISMISSED: "Descartada",
+    AnomalyReviewStatus.NEEDS_FIELD_CHECK: "Requiere visita a terreno",
+}
+
+
+class LoteStatsExclusion(StrEnum):
+    """Why a lote has counts but no statistics in an analysis."""
+
+    NOT_APPLICABLE_GREENHOUSE = "NOT_APPLICABLE_GREENHOUSE"
+    INSUFFICIENT_PIXELS = "INSUFFICIENT_PIXELS"
+
+
+LOTE_STATS_EXCLUSION_LABELS: dict[LoteStatsExclusion, str] = {
+    LoteStatsExclusion.NOT_APPLICABLE_GREENHOUSE: (
+        "No aplica: el satélite mide el techo del invernadero, no el cultivo"
+    ),
+    LoteStatsExclusion.INSUFFICIENT_PIXELS: (
+        "Sin medición: muy pocos píxeles válidos en el lote"
+    ),
+}

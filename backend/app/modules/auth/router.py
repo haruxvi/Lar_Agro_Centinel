@@ -161,7 +161,10 @@ def login(
             requires_2fa_enrollment=True, challenge_token=result.challenge_token
         )
 
-    assert result.tokens is not None  # noqa: S101 - guaranteed by LoginStatus
+    if result.tokens is None:
+        # AUTHENTICATED always carries tokens; if it ever does not, no session
+        # is issued rather than a half-built one.
+        raise _INVALID_CREDENTIALS
     return LoginResponse(
         access_token=result.tokens.access_token,
         refresh_token=result.tokens.refresh_token,

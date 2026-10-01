@@ -1,5 +1,12 @@
 # Bandit configuration (YAML, consumed via `bandit -c .bandit`).
+# Paths are matched as bandit reports them, which depends on how it is called:
+# `bandit -r backend/` (CI) yields "backend/tests/...", `bandit -r .` yields
+# "./backend/tests/...". Both spellings are listed so the exclusion holds
+# either way; with only the "./" form, CI scanned the tests regardless.
 exclude_dirs:
   - "./.venv"
+  - ".venv"
   - "./backend/tests"
+  - "backend/tests"
   - "./frontend/node_modules"
+  - "frontend/node_modules"

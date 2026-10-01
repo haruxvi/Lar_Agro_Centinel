@@ -271,3 +271,187 @@ decisión del equipo, no un cambio para hacer de pasada.
 Antes del primer despliegue fuera de desarrollo.
 
 ---
+
+## KL-005 — El almacenamiento local de rasters no es apto para producción
+
+**Estado:** abierta
+**Introducida en:** Fase 3
+**Severidad:** nula en desarrollo, crítica en un despliegue con filesystem efímero
+
+### Qué pasa
+
+Los GeoTIFF y previews de cada análisis se guardan a través de
+`StorageBackend` (`backend/app/shared/storage.py`). La única
+implementación hoy es `LocalStorageBackend`, que escribe en
+`STORAGE_LOCAL_PATH` (por defecto `./data/rasters`).
+`S3StorageBackend` existe solo como stub: con `STORAGE_BACKEND=s3` la
+aplicación no arranca.
+
+### Por qué importa
+
+En plataformas con filesystem efímero (Railway, Render, Heroku, o
+cualquier contenedor sin volumen persistente) el disco se pierde en
+cada deploy o reinicio. Los registros de `analyses` sobreviven en la
+base, pero los rasters a los que apuntan desaparecen: los análisis
+históricos quedan irrecuperables, y recalcularlos cuesta Processing
+Units de una cuota finita.
+
+### Por qué no se resolvió
+
+La fase entrega el pipeline de análisis; el destino de almacenamiento
+de producción (proveedor, bucket, región, retención) todavía no está
+decidido. La abstracción existe desde el primer día justamente para que
+esa decisión no obligue a tocar los módulos que leen rasters.
+
+### Qué implicaría resolverlo
+
+Implementar `S3StorageBackend` con la misma interfaz: `put`/`get` sobre
+objetos, `get_stream` por rangos, `delete` idempotente y `get_url` como
+URL prefirmada de corta duración. Las keys ya son jerárquicas por
+predio (`rasters/{predio_id}/...`), así que las lifecycle policies se
+definen por prefijo. Cambiar `STORAGE_BACKEND` a `s3` y configurar
+bucket y región.
+
+### Mientras tanto, qué NO hacer
+
+- No desplegar con `STORAGE_BACKEND=local` en un entorno efímero que
+  vaya a tener datos reales
+- No montar `STORAGE_LOCAL_PATH` en un directorio que no esté respaldado
+- No leer ni escribir rasters sin pasar por `StorageBackend`: eso es lo
+  que hace que la migración sea un cambio de configuración
+
+### Revisar cuando
+
+Antes del primer despliegue con datos reales.
+
+---
+
+## KL-006 — La detección de anomalías asume una distribución unimodal dentro del lote
+
+**Estado:** abierta
+**Introducida en:** Fase 3
+**Severidad:** media; mitigada por la revisión humana obligatoria
+
+### Qué pasa
+
+`backend/app/modules/analysis/anomaly.py` marca como anómalos los
+píxeles cuyo z-score dentro de su lote cae bajo
+`ANOMALY_ZSCORE_THRESHOLD`. El z-score supone que el NDVI del lote se
+distribuye de forma aproximadamente normal y con una sola moda.
+
+Dos consecuencias:
+
+1. **Lotes bimodales.** Un lote con dos zonas claramente distintas
+   (una parte joven y otra madura, dos variedades, un sector replantado)
+   tiene un NDVI bimodal. El método marca la zona baja entera como
+   anómala. No es un error de cálculo: es el método aplicado fuera de
+   su supuesto.
+2. **La anomalía infla la dispersión contra la que se mide.** Una zona
+   que ocupa una fracción `p` del lote tiene un z-score medio acotado
+   por |z| ≤ √((1−p)/p), sean cuales sean los valores de NDVI. Para
+   llegar a z ≤ −3 hace falta p ≤ 10 %, y para el umbral de detección
+   (−2), p ≤ 20 %. Una zona dañada que cubre un cuarto del lote **no
+   se detecta**: con este método, lo que falla en grande se vuelve "lo
+   normal" del lote. Con los cortes por defecto, además, la condición
+   de severidad "z ≤ −3 y al menos 10 % del lote" solo se cumple en el
+   caso límite exacto, así que HIGH llega en la práctica por el área
+   absoluta.
+
+### Por qué importa
+
+Un agrónomo que ve una anomalía grande en un lote bimodal puede
+interpretarla como estrés cuando es la estructura del lote. Y al revés,
+un daño extendido (una helada, una plaga generalizada en el lote) puede
+no aparecer porque arrastra la media y la desviación del propio lote.
+
+### Por qué no se resolvió
+
+La alternativa correcta (comparar cada lote con su propia historia, o
+modelar mezclas de distribuciones) necesita escenas acumuladas y casos
+revisados que todavía no existen. El módulo ya está estructurado para
+sumar un método temporal (`AnomalyMethod`) sin reescribir el espacial.
+
+### Qué implicaría resolverlo
+
+- Método temporal: z-score del píxel contra el historial del mismo
+  lote en la misma época, cuando haya escenas suficientes.
+- Estimación robusta de la dispersión (mediana y MAD en lugar de media
+  y desviación), que es mucho menos sensible a la propia zona anómala.
+- Detección de bimodalidad por lote antes de aplicar el z-score.
+- Recalibrar los cortes de severidad con anomalías revisadas
+  (`review_status`), como prevé el ADR-004.
+
+### Mientras tanto, qué NO hacer
+
+- No presentar una anomalía como diagnóstico: es una hipótesis hasta
+  que alguien la revisa
+- No ocultar ni automatizar decisiones de campo sobre la base de la
+  severidad sin revisión
+- No interpretar "sin anomalías" como "lote sano": un daño extendido
+  puede no detectarse
+
+### Revisar cuando
+
+Haya al menos unas centenas de anomalías revisadas, o escenas
+suficientes por lote para el método temporal.
+
+---
+
+## KL-007 — Los análisis reemplazados por un recómputo forzado se acumulan, y sus revisiones quedan dispersas
+
+**Estado:** abierta
+**Introducida en:** Fase 3
+**Severidad:** baja hoy; crece con el uso de `force`
+
+### Qué pasa
+
+Los análisis superseded se conservan íntegros, con su raster en storage
+y sus anomalías revisadas. No hay política de retención: un predio que
+se force-recomputa muchas veces acumula un raster por corrida. Las
+revisiones de anomalías no se transfieren entre corridas, por decisión
+de diseño, así que el conocimiento de campo queda disperso en la cadena
+de análisis superseded en vez de estar en el vigente.
+
+En el modelo: un análisis forzado que termina COMPLETED sobre una escena
+que ya tenía resultado marca al anterior con
+`superseded_by_analysis_id`. El índice
+`uq_analyses_completed_scene` solo exige unicidad entre los vigentes
+(`superseded_by_analysis_id IS NULL`), así que ambos conviven. El
+historial por lote (`/lotes/{id}/history`) usa solo los vigentes; el
+anterior sigue accesible por su id, con su raster y sus anomalías.
+
+### Por qué importa
+
+- Storage crece sin límite con cada recómputo forzado (un GeoTIFF, un
+  PNG y un JSON por corrida).
+- Quien abre el análisis vigente ve anomalías sin revisar aunque la
+  misma zona ya haya sido confirmada o descartada en una corrida
+  anterior. Para encontrar ese juicio hay que recorrer la cadena
+  `superseded_by_analysis_id` hacia atrás.
+
+### Por qué no se resolvió
+
+Transferir revisiones exige decidir cuándo dos anomalías de corridas
+distintas son "la misma" (solapamiento mínimo, tolerancia de forma), y
+una revisión heredada por error es peor que una revisión ausente. El
+POST con `force` avisa cuántas anomalías revisadas tiene el análisis que
+probablemente se reemplace, y el evento `ANALYSIS_FORCED_RECOMPUTE`
+(WARNING) registra el id reemplazado y el conteo exacto.
+
+### Qué implicaría resolverlo
+
+- Una política de retención de rasters de análisis superseded (por
+  antigüedad o por cantidad por escena), con borrado auditado.
+- Opcionalmente, mostrar en el análisis vigente las revisiones de la
+  cadena anterior como referencia, sin copiarlas.
+
+### Mientras tanto, qué NO hacer
+
+- No borrar análisis superseded ni sus rasters a mano: las revisiones
+  y su auditoría apuntan a ellos.
+- No copiar revisiones al análisis nuevo en una migración o un script.
+
+### Revisar cuando
+
+- Exista un caso real de recómputo frecuente, o
+- se defina la retención de rasters (KL-005 cubre el storage local).
