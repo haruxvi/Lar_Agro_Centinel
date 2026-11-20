@@ -126,7 +126,8 @@ def test_analysis_defaults_match_the_phase_3_decisions() -> None:
     settings = _settings()
     assert settings.sentinel_base_url == "https://sh.dataspace.copernicus.eu"
     assert settings.sentinel_token_url.startswith("https://identity.dataspace.")
-    assert settings.sentinel_monthly_pu_budget == 30_000
+    assert settings.sentinel_monthly_pu_budget == 24_000
+    assert settings.sentinel_monthly_request_budget == 24_000
     assert settings.sentinel_cloud_stats_resolution_m == 60
     assert settings.sentinel_cloud_stats_cache_ttl_s == 21_600
     assert settings.analysis_max_cloud_coverage == 0.30

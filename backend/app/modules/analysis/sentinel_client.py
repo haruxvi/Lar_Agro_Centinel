@@ -7,9 +7,9 @@ is synchronous. See docs/dependencies.md and ADR-004.
 
 Scene selection is two steps plus one download:
 
-1. **Catalog** (free) lists the acquisitions in the range and drops tiles that
-   are completely cloudy. A tile is ~110 x 110 km, so its cloud cover says
-   little about one predio; this is only a cheap pre-filter.
+1. **Catalog** (0.01 PU per request, measured) lists the acquisitions in the
+   range and drops tiles that are completely cloudy. A tile is ~110 x 110 km,
+   so its cloud cover says little about one predio; only a cheap pre-filter.
 2. **Statistical API**, one call for the whole range at low resolution,
    measures the cloudy fraction over the predio's exact geometry per date.
    Cached in Redis: past cloud cover does not change.
@@ -33,10 +33,12 @@ import hashlib
 import json
 import math
 import secrets
-from collections.abc import Awaitable, Callable, Sequence
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 import httpx
 from redis import Redis as SyncRedis
@@ -67,6 +69,9 @@ BAND_UNITS: Final = {"B04": "REFLECTANCE", "B08": "REFLECTANCE", "SCL": "DN"}
 # excluded from the denominator through dataMask.
 CLOUD_SCL_CLASSES: Final = (3, 8, 9, 10)
 
+# Bumped when the meaning of a cached cloud measurement changes.
+CLOUD_CACHE_VERSION: Final = "v2"
+
 # Process API output limit per side, in pixels.
 MAX_OUTPUT_PIXELS: Final = 2500
 # Margin around the predio's bbox, in output pixels, so the exact clip later
@@ -83,6 +88,23 @@ BACKOFF_BASE_S: Final = 1.0
 BACKOFF_MAX_S: Final = 30.0
 RETRY_AFTER_MAX_S: Final = 120.0
 
+# Concurrent connections: a slot is a member of a Redis sorted set scored by
+# its lease expiry, so the limit holds across every worker process, and a
+# worker that dies holding a slot frees it when the lease ends.
+SLOT_POLL_S: Final = 0.2
+SLOT_LEASE_MARGIN_S: Final = 30
+_ACQUIRE_SLOT: Final = """
+local now = redis.call('TIME')
+local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+if redis.call('ZCARD', KEYS[1]) < tonumber(ARGV[1]) then
+  redis.call('ZADD', KEYS[1], now_ms + tonumber(ARGV[2]), ARGV[3])
+  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]))
+  return 1
+end
+return 0
+"""
+
 # Keep monthly counters a little past the month they count.
 PU_KEY_TTL_S: Final = 40 * 24 * 3600
 
@@ -94,8 +116,70 @@ class SentinelError(AnalysisError):
     """Base class for Sentinel Hub errors."""
 
 
+_AUTH_MESSAGES: Final = {
+    "NOT_CONFIGURED": (
+        "Faltan las credenciales de Sentinel Hub (Copernicus Data Space) en la "
+        "configuración del servidor."
+    ),
+    "CREDENTIALS_REJECTED": (
+        "Copernicus Data Space rechazó las credenciales de Sentinel Hub: son "
+        "inválidas o están vencidas. Hay que crear un OAuth client nuevo en "
+        "shapps.dataspace.copernicus.eu y actualizar SENTINEL_CLIENT_ID y "
+        "SENTINEL_CLIENT_SECRET. No es una caída del servicio."
+    ),
+    "TOKEN_UNAVAILABLE": (
+        "No se pudo obtener un token: el servicio de identidad de Copernicus "
+        "Data Space no respondió o respondió con un error. Reintentar más tarde."
+    ),
+}
+
+# OAuth2 error codes (RFC 6749, 5.2) that mean "these credentials are not
+# accepted". Keycloak answers 401 invalid_client for a wrong or expired secret;
+# some versions answer 400 with one of these. Compared against this allowlist
+# only: the body is never logged nor echoed, it may repeat the request.
+_REJECTED_OAUTH_ERRORS: Final = frozenset({"invalid_client", "unauthorized_client"})
+
+
 class SentinelAuthError(SentinelError):
-    """The OAuth token could not be obtained. Says why, never with what."""
+    """The OAuth token could not be obtained. Says why, never with what.
+
+    ``reason`` tells an operator what to do: fix the configuration, renew the
+    credentials, or wait for the identity service.
+    """
+
+    def __init__(self, message: str, *, reason: str = "TOKEN_UNAVAILABLE") -> None:
+        """Record the internal message and the reason shown to people."""
+        super().__init__(message)
+        self.reason = reason
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the reason and a message an operator can act on."""
+        fallback = _AUTH_MESSAGES["TOKEN_UNAVAILABLE"]
+        return {
+            "error": type(self).__name__,
+            "reason": self.reason,
+            "message": _AUTH_MESSAGES.get(self.reason, fallback),
+        }
+
+
+class SentinelCredentialsRejectedError(SentinelAuthError):
+    """The identity service refused the client id/secret: wrong or expired.
+
+    Not a service failure: retrying does not help and it never counts against
+    the circuit breaker, which would otherwise report Copernicus as down.
+    """
+
+    def __init__(self, status_code: int) -> None:
+        """Record the status the token endpoint answered with."""
+        super().__init__(
+            f"token endpoint rejected the credentials ({status_code})",
+            reason="CREDENTIALS_REJECTED",
+        )
+        self.status_code = status_code
+
+    def as_dict(self) -> dict[str, object]:
+        """Add the HTTP status to the reason and the message."""
+        return {**super().as_dict(), "status_code": self.status_code}
 
 
 class SentinelRequestError(SentinelError):
@@ -115,22 +199,37 @@ class SentinelRequestError(SentinelError):
         }
 
 
-class SentinelQuotaExceededError(SentinelError):
-    """The monthly Processing Unit budget is spent."""
+QUOTA_PROCESSING_UNITS: Final = "PROCESSING_UNITS"
+QUOTA_REQUESTS: Final = "REQUESTS"
 
-    def __init__(self, spent: float, budget: int) -> None:
-        """Record how much was spent against which budget."""
-        super().__init__(f"{spent:.2f} of {budget} PU spent this month")
+
+class SentinelQuotaExceededError(SentinelError):
+    """One of the monthly budgets is spent: Processing Units or requests.
+
+    ``quota`` says which. Both are checked before every request; whichever
+    runs out first stops the client.
+    """
+
+    def __init__(
+        self, spent: float, budget: int, quota: str = QUOTA_PROCESSING_UNITS
+    ) -> None:
+        """Record which budget ran out, and how much of it was used."""
+        unit = "PU" if quota == QUOTA_PROCESSING_UNITS else "requests"
+        super().__init__(f"{spent:.2f} of {budget} {unit} used this month")
         self.spent = spent
         self.budget = budget
+        self.quota = quota
 
     def as_dict(self) -> dict[str, object]:
-        """Return the spending against the budget."""
-        return {
-            "error": type(self).__name__,
-            "spent_pu": round(self.spent, 2),
-            "budget_pu": self.budget,
-        }
+        """Return which budget ran out, and the use against it."""
+        if self.quota == QUOTA_PROCESSING_UNITS:
+            usage: dict[str, object] = {
+                "spent_pu": round(self.spent, 2),
+                "budget_pu": self.budget,
+            }
+        else:
+            usage = {"requests_made": int(self.spent), "budget_requests": self.budget}
+        return {"error": type(self).__name__, "quota": self.quota, **usage}
 
 
 class SentinelCircuitOpenError(SentinelError):
@@ -144,6 +243,28 @@ class SentinelCircuitOpenError(SentinelError):
     def as_dict(self) -> dict[str, object]:
         """Return when to try again."""
         return {"error": type(self).__name__, "retry_in_s": self.retry_in_s}
+
+
+class SentinelConcurrencyTimeoutError(SentinelError):
+    """No connection slot freed up in time: every slot was busy.
+
+    Ours, not Copernicus's: never counts against the circuit breaker, and no
+    request was sent or counted.
+    """
+
+    def __init__(self, limit: int, waited_s: float) -> None:
+        """Record the limit and how long the request waited for a slot."""
+        super().__init__(f"no connection slot in {waited_s:.0f} s (limit {limit})")
+        self.limit = limit
+        self.waited_s = waited_s
+
+    def as_dict(self) -> dict[str, object]:
+        """Return the limit and the wait."""
+        return {
+            "error": type(self).__name__,
+            "limit": self.limit,
+            "waited_s": round(self.waited_s, 1),
+        }
 
 
 @dataclass(frozen=True)
@@ -252,19 +373,61 @@ class PuUsage:
         return max(0.0, self.budget - self.spent)
 
 
+@dataclass(frozen=True)
+class RequestUsage:
+    """Requests made to Copernicus this month against the budget."""
+
+    month: str
+    made: int
+    budget: int
+
+    @property
+    def remaining(self) -> int:
+        """Return what is left of the budget, never negative."""
+        return max(0, self.budget - self.made)
+
+
+def _month(now: datetime | None) -> str:
+    """Return the quota month, in UTC.
+
+    Copernicus documents that quotas "reset on the first day of every month"
+    without a time or a timezone. UTC is the assumption; the 20% margin of the
+    budgets (80% of the quota) absorbs a reset a few hours apart.
+    """
+    return f"{(now or datetime.now(UTC)).astimezone(UTC):%Y-%m}"
+
+
 def pu_month_key(prefix: str = "sh", now: datetime | None = None) -> str:
     """Return the Redis key holding a month's Processing Unit spending."""
-    moment = now or datetime.now(UTC)
-    return f"{prefix}:pu:{moment:%Y-%m}"
+    return f"{prefix}:pu:{_month(now)}"
+
+
+def request_month_key(prefix: str = "sh", now: datetime | None = None) -> str:
+    """Return the Redis key holding a month's request count."""
+    return f"{prefix}:requests:{_month(now)}"
+
+
+def _text_or_none(raw: object) -> str | None:
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    return str(raw) if raw else None
 
 
 def _usage_from(raw: object, settings: Settings) -> PuUsage:
-    if isinstance(raw, bytes):
-        raw = raw.decode()
+    value = _text_or_none(raw)
     return PuUsage(
-        month=f"{datetime.now(UTC):%Y-%m}",
-        spent=float(str(raw)) if raw else 0.0,
+        month=_month(None),
+        spent=float(value) if value else 0.0,
         budget=settings.sentinel_monthly_pu_budget,
+    )
+
+
+def _requests_from(raw: object, settings: Settings) -> RequestUsage:
+    value = _text_or_none(raw)
+    return RequestUsage(
+        month=_month(None),
+        made=int(value) if value else 0,
+        budget=settings.sentinel_monthly_request_budget,
     )
 
 
@@ -277,6 +440,24 @@ def read_pu_usage(
     building a client (and an HTTP connection) to Sentinel Hub.
     """
     return _usage_from(redis.get(pu_month_key(key_prefix)), settings)
+
+
+def read_request_usage(
+    redis: SyncRedis, settings: Settings, *, key_prefix: str = "sh"
+) -> RequestUsage:
+    """Return this month's request count from a synchronous Redis client."""
+    return _requests_from(redis.get(request_month_key(key_prefix)), settings)
+
+
+def quota_exceeded(
+    pu: PuUsage, requests: RequestUsage
+) -> SentinelQuotaExceededError | None:
+    """Return the error for the first spent budget, or None if both have room."""
+    if requests.made >= requests.budget:
+        return SentinelQuotaExceededError(requests.made, requests.budget, QUOTA_REQUESTS)
+    if pu.spent >= pu.budget:
+        return SentinelQuotaExceededError(pu.spent, pu.budget, QUOTA_PROCESSING_UNITS)
+    return None
 
 
 class SentinelEventSink(Protocol):
@@ -326,9 +507,14 @@ def buffered_bbox(
 def cloud_cache_key(
     prefix: str, geometry: BaseGeometry, date_from: date, date_to: date
 ) -> str:
-    """Key of a cached cloud measurement: sh:cloud:{sha256(wkb)}:{from}:{to}."""
+    """Key of a cached cloud measurement: sh:cloud:v2:{sha256(wkb)}:{from}:{to}.
+
+    v2: measurements cached before lastIntervalBehavior=SHORTEN lack the last
+    day of their range; the version keeps them from being reused.
+    """
     digest = hashlib.sha256(geometry.wkb).hexdigest()
-    return f"{prefix}:cloud:{digest}:{date_from.isoformat()}:{date_to.isoformat()}"
+    span = f"{date_from.isoformat()}:{date_to.isoformat()}"
+    return f"{prefix}:cloud:{CLOUD_CACHE_VERSION}:{digest}:{span}"
 
 
 def _iso_day_start(day: date) -> str:
@@ -337,6 +523,23 @@ def _iso_day_start(day: date) -> str:
 
 def _iso_day_end(day: date) -> str:
     return f"{day.isoformat()}T23:59:59Z"
+
+
+def _credentials_rejected(response: httpx.Response) -> bool:
+    """Tell a refusal of the credentials from any other token failure.
+
+    401 and 403 always; 400 only with an OAuth error code that names the
+    client. Only the ``error`` field is read, and only compared.
+    """
+    if response.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
+        return True
+    if response.status_code != httpx.codes.BAD_REQUEST:
+        return False
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(error, str) and error in _REJECTED_OAUTH_ERRORS
 
 
 # --- evalscripts -------------------------------------------------------------
@@ -419,7 +622,9 @@ class SentinelClient:
         """Bind the client to its configuration, Redis and an event sink."""
         if not settings.sentinel_configured:
             # Callers check availability first; this is the last guard.
-            raise SentinelAuthError("Sentinel Hub credentials are not configured")
+            raise SentinelAuthError(
+                "Sentinel Hub credentials are not configured", reason="NOT_CONFIGURED"
+            )
         self._settings = settings
         self._redis = redis
         self._events = events
@@ -443,6 +648,45 @@ class SentinelClient:
 
     def _pu_key(self, now: datetime | None = None) -> str:
         return pu_month_key(self._prefix, now)
+
+    def _request_key(self, now: datetime | None = None) -> str:
+        return request_month_key(self._prefix, now)
+
+    @property
+    def _slots_key(self) -> str:
+        return f"{self._prefix}:connections"
+
+    @asynccontextmanager
+    async def _connection_slot(self) -> AsyncIterator[None]:
+        """Hold one of sentinel_max_concurrent_requests slots, across processes.
+
+        Waits up to sentinel_concurrency_wait_s for a free slot instead of
+        failing at once: a busy slot is our own limit, not an outage.
+        """
+        limit = self._settings.sentinel_max_concurrent_requests
+        wait_s = self._settings.sentinel_concurrency_wait_s
+        lease_ms = (
+            self._settings.sentinel_request_timeout_s + SLOT_LEASE_MARGIN_S
+        ) * 1000
+        member = secrets.token_hex(12)
+        started = time.monotonic()
+        while True:
+            acquired = await cast(
+                Awaitable[Any],
+                self._redis.eval(
+                    _ACQUIRE_SLOT, 1, self._slots_key, str(limit), str(lease_ms), member
+                ),
+            )
+            if int(acquired) == 1:
+                break
+            waited = time.monotonic() - started
+            if waited >= wait_s:
+                raise SentinelConcurrencyTimeoutError(limit, waited)
+            await asyncio.sleep(SLOT_POLL_S)
+        try:
+            yield
+        finally:
+            await self._redis.zrem(self._slots_key, member)
 
     @property
     def _circuit_open_key(self) -> str:
@@ -489,22 +733,30 @@ class SentinelClient:
         client_id = self._settings.sentinel_client_id
         client_secret = self._settings.sentinel_client_secret
         if client_id is None or client_secret is None:
-            raise SentinelAuthError("Sentinel Hub credentials are not configured")
-        try:
-            response = await self._http.post(
-                self._settings.sentinel_token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id.get_secret_value(),
-                    "client_secret": client_secret.get_secret_value(),
-                },
+            raise SentinelAuthError(
+                "Sentinel Hub credentials are not configured", reason="NOT_CONFIGURED"
             )
+        try:
+            async with self._connection_slot():
+                # Counted like any other request: the documentation does not
+                # say whether token requests count against the quota.
+                await self._count_request()
+                response = await self._http.post(
+                    self._settings.sentinel_token_url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id.get_secret_value(),
+                        "client_secret": client_secret.get_secret_value(),
+                    },
+                )
         except httpx.HTTPError as exc:
             raise SentinelAuthError(
                 f"token request failed: {type(exc).__name__}"
             ) from None
         if response.status_code != httpx.codes.OK:
             # The body may echo request details; it is not logged or raised.
+            if _credentials_rejected(response):
+                raise SentinelCredentialsRejectedError(response.status_code)
             raise SentinelAuthError(f"token endpoint answered {response.status_code}")
         try:
             payload = response.json()
@@ -540,15 +792,34 @@ class SentinelClient:
         raw = await self._redis.get(self._pu_key())
         return _usage_from(raw, self._settings)
 
+    async def request_usage(self) -> RequestUsage:
+        """Return this month's requests against the budget (for health checks)."""
+        raw = await self._redis.get(self._request_key())
+        return _requests_from(raw, self._settings)
+
     async def ensure_budget(self) -> None:
-        """Raise, and record the event, when the month's budget is spent."""
-        usage = await self.pu_usage()
-        if usage.spent >= usage.budget:
-            await self._events(
-                SENTINEL_QUOTA_EXCEEDED,
-                {"spent_pu": round(usage.spent, 2), "budget_pu": usage.budget},
-            )
-            raise SentinelQuotaExceededError(usage.spent, usage.budget)
+        """Raise, and record the event, when either monthly budget is spent.
+
+        Requests run out long before Processing Units (about 3 requests and
+        0.085 PU per analysis), so both are checked before every call.
+        """
+        exceeded = quota_exceeded(await self.pu_usage(), await self.request_usage())
+        if exceeded is not None:
+            details = exceeded.as_dict()
+            details.pop("error")
+            await self._events(SENTINEL_QUOTA_EXCEEDED, details)
+            raise exceeded
+
+    async def _count_request(self) -> None:
+        """Count one request against the month, before it is sent.
+
+        Every attempt counts, failed or retried, and so does every token
+        request: the documentation does not say what Copernicus counts, and
+        stopping early is better than being cut off mid-analysis.
+        """
+        key = self._request_key()
+        await self._redis.incr(key)
+        await self._redis.expire(key, PU_KEY_TTL_S)
 
     async def _account(self, response: httpx.Response) -> float:
         raw = response.headers.get(PU_HEADER)
@@ -602,10 +873,13 @@ class SentinelClient:
 
     # --- transport ------------------------------------------------------------------
 
-    async def _send(
-        self, method: str, path: str, *, billable: bool, **kwargs: Any
-    ) -> httpx.Response:
-        """Send one logical request, with budget, retries and the breaker.
+    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Send one logical request, with budgets, retries and the breaker.
+
+        Both monthly budgets (PU and requests) are checked before every
+        attempt, retries included, and every attempt is counted as a request
+        before it is sent. Catalog, Statistical and Process alike: none is
+        free (the Catalog costs 0.01 PU, measured).
 
         Retries 5xx, timeouts and transport errors with exponential backoff,
         and 429 after its Retry-After (milliseconds). Never retries other 4xx.
@@ -613,24 +887,27 @@ class SentinelClient:
         circuit breaker; client errors and rate limits do not count at all.
         """
         await self._ensure_circuit_closed()
-        if billable:
-            await self.ensure_budget()
 
         url = f"{self._settings.sentinel_base_url}{path}"
         extra_headers: dict[str, str] = kwargs.pop("headers", {})
         attempt = _Attempt(retries_left=self._settings.sentinel_max_retries)
         refreshed_token = False
         while True:
+            await self.ensure_budget()
             token = await self.get_token()
             headers = {"Authorization": f"Bearer {token}", **extra_headers}
             try:
-                response = await self._http.request(
-                    method,
-                    url,
-                    headers=headers,
-                    timeout=self._settings.sentinel_request_timeout_s,
-                    **kwargs,
-                )
+                async with self._connection_slot():
+                    # Counted once a slot is held: a request that never got
+                    # one was never sent.
+                    await self._count_request()
+                    response = await self._http.request(
+                        method,
+                        url,
+                        headers=headers,
+                        timeout=self._settings.sentinel_request_timeout_s,
+                        **kwargs,
+                    )
             except httpx.TimeoutException:
                 failure = "timeout"
             except httpx.TransportError as exc:
@@ -696,7 +973,7 @@ class SentinelClient:
         }
         scenes: list[SceneCandidate] = []
         while True:
-            response = await self._send("POST", CATALOG_PATH, billable=False, json=body)
+            response = await self._send("POST", CATALOG_PATH, json=body)
             payload = response.json()
             for feature in payload.get("features", []):
                 properties = feature.get("properties", {})
@@ -748,13 +1025,17 @@ class SentinelClient:
                     "from": _iso_day_start(date_from),
                     "to": _iso_day_end(date_to),
                 },
-                "aggregationInterval": {"of": "P1D"},
+                # The range ends at 23:59:59, one second short of a whole day,
+                # and the API's default (SKIP) drops an incomplete last
+                # interval: the newest date would never be measured, so never
+                # chosen. Verified against the real API (2026-11-20).
+                "aggregationInterval": {"of": "P1D", "lastIntervalBehavior": "SHORTEN"},
                 "evalscript": cloud_evalscript(),
                 "resx": resx,
                 "resy": resy,
             },
         }
-        response = await self._send("POST", STATISTICS_PATH, billable=True, json=body)
+        response = await self._send("POST", STATISTICS_PATH, json=body)
         observations = parse_cloud_statistics(response.json())
         await self._redis.set(
             key,
@@ -872,7 +1153,6 @@ class SentinelClient:
         response = await self._send(
             "POST",
             PROCESS_PATH,
-            billable=True,
             json=body,
             headers={"Accept": "image/tiff"},
         )

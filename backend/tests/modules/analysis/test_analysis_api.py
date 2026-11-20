@@ -6,6 +6,7 @@ FakeSentinelClient: nothing here reaches arq's worker or Sentinel Hub.
 
 from __future__ import annotations
 
+import io
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
@@ -13,9 +14,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import rasterio
 import redis
 from fastapi.testclient import TestClient
+from PIL import Image
 from pydantic import SecretStr
+from shapely.geometry import shape
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,7 +27,7 @@ from app.modules.analysis.exceptions import QueueUnavailableError
 from app.modules.analysis.models import Analysis, Anomaly
 from app.modules.analysis.queue import get_analysis_queue
 from app.modules.analysis.router import RECOMPUTE_WARNING
-from app.modules.analysis.sentinel_client import pu_month_key
+from app.modules.analysis.sentinel_client import pu_month_key, request_month_key
 from app.modules.analysis.service import AnalysisService
 from app.modules.audit import events
 from app.modules.audit.models import AuditLog
@@ -666,6 +670,86 @@ async def test_the_detail_links_duplicates_and_superseded_analyses(
     assert old.json()["raster_url"] is not None  # superseded, still served
 
 
+@pytest.mark.asyncio
+async def test_the_preview_bounds_are_those_of_the_geotiff_in_leaflet_order(
+    client: TestClient,
+    app_session: Session,
+    settings: Settings,
+    storage: LocalStorageBackend,
+    predio: Predio,
+    cuartel: Lote,
+    agronomo: tuple[User, Headers],
+) -> None:
+    analysis = await _completed(app_session, settings, storage, predio, agronomo[0])
+    assert analysis.raster_key is not None and analysis.preview_key is not None
+    raster_bytes = await storage.get(analysis.raster_key)
+    with rasterio.MemoryFile(raster_bytes) as memory, memory.open() as raster:
+        tif = raster.bounds
+        tif_shape = (raster.height, raster.width)
+        assert raster.crs.to_epsg() == 4326
+    with Image.open(io.BytesIO(await storage.get(analysis.preview_key))) as preview:
+        png_shape = (preview.height, preview.width)
+
+    response = client.get(f"{_base(predio)}/analyses/{analysis.id}", headers=agronomo[1])
+
+    (south, west), (north, east) = response.json()["preview_bounds"]
+    assert png_shape == tif_shape  # same grid, so the same corners
+    assert (west, south, east, north) == pytest.approx(
+        (tif.left, tif.bottom, tif.right, tif.top), abs=1e-12
+    )
+    # The predio lies inside the overlay.
+    p_west, p_south, p_east, p_north = shape(g.SQUARE).bounds
+    assert west < p_west < p_east < east and south < p_south < p_north < north
+
+
+@pytest.mark.asyncio
+async def test_an_analysis_without_rasters_has_no_preview_bounds(
+    client: TestClient,
+    app_session: Session,
+    settings: Settings,
+    storage: LocalStorageBackend,
+    predio: Predio,
+    agronomo: tuple[User, Headers],
+) -> None:
+    await _completed(app_session, settings, storage, predio, agronomo[0])
+    duplicate = await _completed(app_session, settings, storage, predio, agronomo[0])
+
+    response = client.get(f"{_base(predio)}/analyses/{duplicate.id}", headers=agronomo[1])
+
+    assert response.json()["status"] == "DUPLICATE_SCENE"
+    assert response.json()["preview_bounds"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_detail_and_the_raster_carry_the_copernicus_attribution(
+    client: TestClient,
+    app_session: Session,
+    settings: Settings,
+    storage: LocalStorageBackend,
+    predio: Predio,
+    agronomo: tuple[User, Headers],
+) -> None:
+    first = await _completed(app_session, settings, storage, predio, agronomo[0])
+    duplicate = await _completed(app_session, settings, storage, predio, agronomo[0])
+    pending = client.post(
+        f"{_base(predio)}/analyses", json=SEPTEMBER, headers=agronomo[1]
+    )
+    expected = "Contains modified Copernicus Sentinel data 2026"  # the scene's year
+
+    def detail(analysis_id: object) -> dict[str, Any]:
+        url = f"{_base(predio)}/analyses/{analysis_id}"
+        body: dict[str, Any] = client.get(url, headers=agronomo[1]).json()
+        return body
+
+    assert detail(first.id)["attribution"] == expected
+    assert detail(duplicate.id)["attribution"] == expected
+    assert detail(pending.json()["analysis_id"])["attribution"] is None
+    assert first.raster_key is not None
+    raster_bytes = await storage.get(first.raster_key)
+    with rasterio.MemoryFile(raster_bytes) as memory, memory.open() as raster:
+        assert raster.tags()["TIFFTAG_COPYRIGHT"] == expected
+
+
 def test_an_unknown_analysis_is_404(
     client: TestClient, predio: Predio, agronomo: tuple[User, Headers]
 ) -> None:
@@ -985,6 +1069,49 @@ def test_the_auditor_sees_quota_usage(
     assert body["available"] is True
     assert body["processing_units"]["spent"] == 123.5
     assert body["processing_units"]["budget"] == settings.sentinel_monthly_pu_budget
+
+
+def test_a_spent_request_budget_answers_429_before_queueing(
+    client: TestClient,
+    predio: Predio,
+    agronomo: tuple[User, Headers],
+    queue: FakeQueue,
+    settings: Settings,
+    redis_client: redis.Redis,
+) -> None:
+    # PU left, requests gone: requests are the budget that runs out first.
+    redis_client.set(request_month_key(), settings.sentinel_monthly_request_budget)
+    try:
+        response = client.post(
+            f"{_base(predio)}/analyses", json=SEPTEMBER, headers=agronomo[1]
+        )
+    finally:
+        redis_client.delete(request_month_key())
+
+    assert response.status_code == 429
+    assert response.json()["detail"]["quota"] == "REQUESTS"
+    assert queue.enqueued == []
+
+
+def test_the_operations_status_exposes_both_budgets(
+    client: TestClient,
+    settings: Settings,
+    redis_client: redis.Redis,
+    make_client_user: MakeClientUser,
+) -> None:
+    redis_client.set(request_month_key(), 42)
+    try:
+        _, auditor = make_client_user((Role.AUDITOR,))
+        body = client.get("/api/v1/analysis/status", headers=auditor).json()
+    finally:
+        redis_client.delete(request_month_key())
+
+    assert body["requests"] == {
+        "month": body["processing_units"]["month"],
+        "made": 42,
+        "budget": settings.sentinel_monthly_request_budget,
+        "remaining": settings.sentinel_monthly_request_budget - 42,
+    }
 
 
 def test_quota_usage_is_not_public(

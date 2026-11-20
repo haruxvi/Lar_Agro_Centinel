@@ -14,7 +14,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,15 +37,23 @@ from app.modules.analysis.sentinel_client import (
     SentinelAuthError,
     SentinelCircuitOpenError,
     SentinelClient,
+    SentinelConcurrencyTimeoutError,
+    SentinelCredentialsRejectedError,
     SentinelQuotaExceededError,
     SentinelRequestError,
     bands_evalscript,
     cloud_cache_key,
     cloud_evalscript,
     parse_cloud_statistics,
+    pu_month_key,
+    request_month_key,
 )
 from app.shared.config import Settings
 from tests.fixtures import geometries as g
+from tests.fixtures.sentinel.statistical_api import (
+    SEPTEMBER_CLOUD,
+    StatisticalApiDouble,
+)
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "sentinel"
 SECRET = "fixture-client-secret-never-real"  # noqa: S105 - test fixture
@@ -289,17 +297,13 @@ async def test_a_rejected_token_is_dropped_and_fetched_again_once(
 async def test_processing_units_accumulate_per_month(
     client: SentinelClient, fake: FakeSentinel, redis: Redis, prefix: str
 ) -> None:
-    fake.queue(
-        STATISTICS_PATH,
-        _ok(_fixture("statistics_cloud.json"), pu=1.5),
-        _ok(_fixture("statistics_cloud.json"), pu=2.25),
-    )
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble(pu=(1.5, 2.25))
     await client.cloud_coverage_by_date(PREDIO, SEPT_1, SEPT_30)
     await client.cloud_coverage_by_date(PREDIO, SEPT_1, date(2026, 9, 29))  # no cache hit
 
     usage = await client.pu_usage()
     assert usage.spent == pytest.approx(3.75)
-    assert usage.remaining == pytest.approx(30_000 - 3.75)
+    assert usage.remaining == pytest.approx(usage.budget - 3.75)
     key = f"{prefix}:pu:{usage.month}"
     assert await redis.ttl(key) > 30 * 24 * 3600  # outlives the month it counts
 
@@ -322,26 +326,11 @@ async def test_a_spent_budget_refuses_billable_requests_without_calling_out(
     assert fake.api_calls(STATISTICS_PATH) == 0
     assert caught.value.as_dict() == {
         "error": "SentinelQuotaExceededError",
+        "quota": "PROCESSING_UNITS",
         "spent_pu": 10.0,
         "budget_pu": 10,
     }
     assert events.types() == [SENTINEL_QUOTA_EXCEEDED]
-
-
-@pytest.mark.asyncio
-async def test_the_free_catalog_still_answers_when_the_budget_is_spent(
-    redis: Redis,
-    prefix: str,
-    fake: FakeSentinel,
-    events: Events,
-    sleeps: Sleeps,
-) -> None:
-    client = _client(redis, prefix, fake, events, sleeps, sentinel_monthly_pu_budget=10)
-    usage = await client.pu_usage()
-    await redis.set(f"{prefix}:pu:{usage.month}", "10.0")
-    fake.queue(CATALOG_PATH, _ok(_fixture("catalog_search.json")))
-
-    assert len(await client.search_scenes(PREDIO, SEPT_1, SEPT_30)) == 5
 
 
 # --- cloud statistics and its cache ----------------------------------------------
@@ -351,7 +340,7 @@ async def test_the_free_catalog_still_answers_when_the_budget_is_spent(
 async def test_the_cloud_measurement_is_cached(
     client: SentinelClient, fake: FakeSentinel, redis: Redis, prefix: str
 ) -> None:
-    fake.queue(STATISTICS_PATH, _ok(_fixture("statistics_cloud.json"), pu=0.5))
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble(pu=(0.5,))
     first = await client.cloud_coverage_by_date(PREDIO, SEPT_1, SEPT_30)
     second = await client.cloud_coverage_by_date(PREDIO, SEPT_1, SEPT_30)
 
@@ -366,12 +355,15 @@ async def test_the_cloud_measurement_is_cached(
 async def test_the_statistical_request_measures_scl_over_the_exact_geometry(
     client: SentinelClient, fake: FakeSentinel
 ) -> None:
-    fake.queue(STATISTICS_PATH, _ok(_fixture("statistics_cloud.json")))
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble()
     await client.cloud_coverage_by_date(PREDIO, SEPT_1, SEPT_30)
 
     body = json.loads(fake.calls[-1].content)
     assert body["input"]["bounds"]["geometry"]["type"] == "Polygon"
-    assert body["aggregation"]["aggregationInterval"] == {"of": "P1D"}
+    assert body["aggregation"]["aggregationInterval"] == {
+        "of": "P1D",
+        "lastIntervalBehavior": "SHORTEN",
+    }
     # 60 m in degrees at the predio's latitude: ~0.00054 deg of latitude.
     assert body["aggregation"]["resy"] == pytest.approx(60 / 110_574)
 
@@ -430,7 +422,7 @@ async def test_selection_picks_the_most_recent_date_under_the_threshold(
     client: SentinelClient, fake: FakeSentinel
 ) -> None:
     fake.queue(CATALOG_PATH, _ok(_fixture("catalog_search.json")))
-    fake.queue(STATISTICS_PATH, _ok(_fixture("statistics_cloud.json")))
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble()
 
     selection = await client.select_scene(PREDIO, SEPT_1, SEPT_30)
 
@@ -450,13 +442,79 @@ async def test_the_statistical_span_is_narrowed_to_the_candidates(
     client: SentinelClient, fake: FakeSentinel
 ) -> None:
     fake.queue(CATALOG_PATH, _ok(_fixture("catalog_search.json")))
-    fake.queue(STATISTICS_PATH, _ok(_fixture("statistics_cloud.json")))
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble()
     await client.select_scene(PREDIO, SEPT_1, SEPT_30)
 
     stats_request = next(c for c in fake.calls if c.url.path == STATISTICS_PATH)
     time_range = json.loads(stats_request.content)["aggregation"]["timeRange"]
-    # The 100% cloudy tile of 09-05 is dropped by the free pre-filter.
+    # The 100% cloudy tile of 09-05 is dropped by the cheap Catalog pre-filter.
     assert time_range == {"from": "2026-09-10T00:00:00Z", "to": "2026-09-20T23:59:59Z"}
+
+
+# --- regression: the newest acquisition was never selectable ------------------------
+#
+# Found on real data (2026-11-20, a predio in Colchagua). The Statistical API
+# splits the range into P1D intervals and, by default
+# (lastIntervalBehavior SKIP), drops an incomplete last one. The range ended
+# at 23:59:59, one second short of a whole day, and it is narrowed to the
+# candidates, so its last day is always the newest acquisition: that date was
+# never measured, hence never chosen. The canned statistics fixture hid it by
+# answering for the last day anyway; StatisticalApiDouble applies the rule.
+
+# The real acquisitions of 2026-10-21..2026-11-20 over that predio: date ->
+# (tile cloud cover %, cloudy fraction measured over the predio).
+REAL_RANGE = (date(2026, 10, 21), date(2026, 11, 20))
+REAL_ACQUISITIONS = {
+    date(2026, 11, 13): (1.71, 0.0),
+    date(2026, 11, 8): (0.1, 0.0),
+    date(2026, 11, 3): (28.05, 0.0955),
+    date(2026, 10, 31): (99.86, 1.0),
+    date(2026, 10, 29): (99.97, 1.0),
+    date(2026, 10, 24): (53.31, 1.0),
+}
+
+
+def _real_catalog() -> dict[str, Any]:
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "id": f"S2X_MSIL2A_{day:%Y%m%d}T143700_N0513_R096_T19HBB_{day:%Y%m%d}",
+                "properties": {
+                    "datetime": f"{day.isoformat()}T14:47:00Z",
+                    "eo:cloud_cover": tile_cloud,
+                },
+            }
+            for day, (tile_cloud, _) in REAL_ACQUISITIONS.items()
+        ],
+        "context": {"returned": len(REAL_ACQUISITIONS)},
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_newest_clear_acquisition_is_chosen_like_on_real_data(
+    client: SentinelClient, fake: FakeSentinel
+) -> None:
+    fake.queue(CATALOG_PATH, _ok(_real_catalog()))
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble(
+        {day: predio_cloud for day, (_, predio_cloud) in REAL_ACQUISITIONS.items()},
+        pu=(0.025,),
+        sample_count=157,
+    )
+
+    selection = await client.select_scene(PREDIO, *REAL_RANGE)
+
+    # 2026-11-13 is the newest date and 0% cloudy over the predio. Before the
+    # fix it was never measured and 2026-11-08 was chosen instead.
+    assert selection.scene_date == date(2026, 11, 13)
+    assert selection.cloud_coverage == 0.0
+    assert date(2026, 11, 13) in {o.acquired_on for o in selection.evaluated}
+
+
+def test_cloud_measurements_cached_before_the_fix_are_not_reused() -> None:
+    key = cloud_cache_key("sh", PREDIO, SEPT_1, SEPT_30)
+    assert key.startswith("sh:cloud:v2:")
 
 
 @pytest.mark.asyncio
@@ -470,10 +528,10 @@ async def test_no_suitable_scene_lists_every_date_evaluated(
     client = _client(
         redis, prefix, fake, events, sleeps, analysis_max_cloud_coverage=0.05
     )
-    stats = _fixture("statistics_cloud.json")
-    stats["data"][0]["outputs"]["cloud"]["bands"]["B0"]["stats"]["mean"] = 0.47
     fake.queue(CATALOG_PATH, _ok(_fixture("catalog_search.json")))
-    fake.queue(STATISTICS_PATH, _ok(stats))
+    fake.routes[STATISTICS_PATH] = StatisticalApiDouble(
+        {**SEPTEMBER_CLOUD, date(2026, 9, 10): 0.47}
+    )
 
     with pytest.raises(NoSuitableSceneFoundError) as caught:
         await client.select_scene(PREDIO, SEPT_1, SEPT_30)
@@ -676,6 +734,313 @@ async def test_the_circuit_opens_after_n_failures_and_closes_after_the_period(
     fake.queue(CATALOG_PATH, _ok({"features": [], "context": {}}))
     assert await client.search_scenes(PREDIO, SEPT_1, SEPT_30) == []
     assert await redis.get(f"{prefix}:circuit:failures") is None
+
+
+# --- expired or invalid credentials -------------------------------------------------
+
+
+def _token_answers(fake: FakeSentinel, response: httpx.Response) -> None:
+    async def answer(_: httpx.Request) -> httpx.Response:
+        return response
+
+    fake.routes["token"] = answer
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # Keycloak (Copernicus identity) for a wrong or expired client secret.
+        httpx.Response(401, json={"error": "invalid_client"}),
+        httpx.Response(400, json={"error": "unauthorized_client"}),
+        httpx.Response(403),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rejected_credentials_say_so_and_never_open_the_circuit(
+    redis: Redis,
+    prefix: str,
+    fake: FakeSentinel,
+    events: Events,
+    sleeps: Sleeps,
+    response: httpx.Response,
+) -> None:
+    client = _client(
+        redis, prefix, fake, events, sleeps, sentinel_circuit_failure_threshold=2
+    )
+    _token_answers(fake, response)
+
+    for _ in range(5):  # well past the breaker threshold
+        with pytest.raises(SentinelCredentialsRejectedError) as caught:
+            await client.search_scenes(PREDIO, SEPT_1, SEPT_30)
+
+    detail = caught.value.as_dict()
+    assert detail["reason"] == "CREDENTIALS_REJECTED"
+    assert detail["status_code"] == response.status_code
+    assert "inválidas o están vencidas" in str(detail["message"])
+    assert "SENTINEL_CLIENT_SECRET" in str(detail["message"])
+    # Not an outage: no breaker, no retries, nothing reached the API.
+    assert events.types() == []
+    assert await redis.get(f"{prefix}:circuit:failures") is None
+    assert await redis.get(f"{prefix}:circuit:open") is None
+    assert fake.api_calls(CATALOG_PATH) == 0
+    assert fake.token_calls == 5
+    assert sleeps.delays == []
+    assert SECRET not in json.dumps(detail)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(503),
+        httpx.Response(500),
+        # A 400 that does not name the client is not a verdict on the secret.
+        httpx.Response(400, json={"error": "invalid_request"}),
+        httpx.Response(400, text="not json"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_other_token_failures_are_not_reported_as_bad_credentials(
+    client: SentinelClient, fake: FakeSentinel, response: httpx.Response
+) -> None:
+    _token_answers(fake, response)
+
+    with pytest.raises(SentinelAuthError) as caught:
+        await client.get_token()
+
+    assert not isinstance(caught.value, SentinelCredentialsRejectedError)
+    assert caught.value.as_dict()["reason"] == "TOKEN_UNAVAILABLE"
+    assert "vencidas" not in str(caught.value.as_dict()["message"])
+
+
+def test_missing_credentials_have_their_own_reason(redis: Redis) -> None:
+    with pytest.raises(SentinelAuthError) as caught:
+        SentinelClient(
+            _settings(sentinel_client_id=None, sentinel_client_secret=None),
+            redis,
+            Events(),
+        )
+    assert caught.value.as_dict()["reason"] == "NOT_CONFIGURED"
+
+
+# --- the two monthly budgets: PU and requests ---------------------------------------
+
+
+async def _set_requests(redis: Redis, prefix: str, made: int) -> None:
+    await redis.set(request_month_key(prefix), str(made))
+
+
+async def _set_pu(redis: Redis, prefix: str, spent: float) -> None:
+    await redis.set(pu_month_key(prefix), str(spent))
+
+
+@pytest.mark.asyncio
+async def test_a_spent_request_budget_refuses_even_with_pu_left(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    client = _client(
+        redis,
+        prefix,
+        fake,
+        events,
+        sleeps,
+        sentinel_monthly_request_budget=50,
+        sentinel_monthly_pu_budget=10_000,
+    )
+    await _set_requests(redis, prefix, 50)
+    await _set_pu(redis, prefix, 1.0)
+
+    with pytest.raises(SentinelQuotaExceededError) as caught:
+        await client.cloud_coverage_by_date(PREDIO, SEPT_1, SEPT_30)
+
+    assert caught.value.as_dict() == {
+        "error": "SentinelQuotaExceededError",
+        "quota": "REQUESTS",
+        "requests_made": 50,
+        "budget_requests": 50,
+    }
+    assert fake.calls == []  # not even a token request
+    assert events.recorded == [
+        (
+            SENTINEL_QUOTA_EXCEEDED,
+            {"quota": "REQUESTS", "requests_made": 50, "budget_requests": 50},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_spent_pu_budget_refuses_even_with_requests_left(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    client = _client(
+        redis,
+        prefix,
+        fake,
+        events,
+        sleeps,
+        sentinel_monthly_request_budget=10_000,
+        sentinel_monthly_pu_budget=10,
+    )
+    await _set_requests(redis, prefix, 3)
+    await _set_pu(redis, prefix, 10.0)
+
+    with pytest.raises(SentinelQuotaExceededError) as caught:
+        await client.cloud_coverage_by_date(PREDIO, SEPT_1, SEPT_30)
+
+    assert caught.value.as_dict()["quota"] == "PROCESSING_UNITS"
+    assert events.recorded == [
+        (
+            SENTINEL_QUOTA_EXCEEDED,
+            {"quota": "PROCESSING_UNITS", "spent_pu": 10.0, "budget_pu": 10},
+        )
+    ]
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_catalog_is_refused_too_once_a_budget_is_spent(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    # The Catalog costs 0.01 PU and a request: it is not exempt.
+    client = _client(
+        redis, prefix, fake, events, sleeps, sentinel_monthly_request_budget=5
+    )
+    await _set_requests(redis, prefix, 5)
+
+    with pytest.raises(SentinelQuotaExceededError):
+        await client.search_scenes(PREDIO, SEPT_1, SEPT_30)
+    assert fake.api_calls(CATALOG_PATH) == 0
+
+
+@pytest.mark.asyncio
+async def test_every_attempt_and_the_token_count_as_requests(
+    client: SentinelClient, fake: FakeSentinel, redis: Redis, prefix: str
+) -> None:
+    # One logical Catalog call: a token, a 503, then the answer.
+    fake.queue(CATALOG_PATH, httpx.Response(503), _ok({"features": [], "context": {}}))
+    await client.search_scenes(PREDIO, SEPT_1, SEPT_30)
+
+    usage = await client.request_usage()
+    assert usage.made == 3  # token + failed attempt + retry
+    assert fake.token_calls == 1 and fake.api_calls(CATALOG_PATH) == 2
+    assert await redis.ttl(request_month_key(prefix)) > 30 * 24 * 3600
+
+
+@pytest.mark.asyncio
+async def test_the_budget_is_checked_again_before_a_retry(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    client = _client(
+        redis, prefix, fake, events, sleeps, sentinel_monthly_request_budget=2
+    )
+    fake.queue(CATALOG_PATH, httpx.Response(503), _ok({"features": [], "context": {}}))
+
+    # Token (1) and the first attempt (2) use the budget up: the retry is refused.
+    with pytest.raises(SentinelQuotaExceededError) as caught:
+        await client.search_scenes(PREDIO, SEPT_1, SEPT_30)
+    assert caught.value.quota == "REQUESTS"
+    assert fake.api_calls(CATALOG_PATH) == 1
+
+
+def test_the_monthly_keys_are_computed_in_utc() -> None:
+    # 23:30 on Nov 30 in Chile (UTC-3) is already December in UTC.
+    santiago_evening = datetime(
+        2026, 11, 30, 23, 30, tzinfo=timezone(timedelta(hours=-3))
+    )
+    assert request_month_key("sh", santiago_evening) == "sh:requests:2026-12"
+    assert pu_month_key("sh", santiago_evening) == "sh:pu:2026-12"
+
+
+# --- concurrent connections (global, across processes) -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_request_over_the_concurrency_limit_waits_for_a_slot(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    client = _client(
+        redis, prefix, fake, events, sleeps, sentinel_max_concurrent_requests=2
+    )
+    await client.get_token()  # cached: the three calls below need no token
+    gate = asyncio.Event()
+    in_flight = 0
+    peak = 0
+
+    async def slow_catalog(_: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await gate.wait()
+        in_flight -= 1
+        return _ok({"features": [], "context": {}})
+
+    fake.routes[CATALOG_PATH] = slow_catalog
+    calls = [
+        asyncio.create_task(client.search_scenes(PREDIO, SEPT_1, SEPT_30))
+        for _ in range(3)
+    ]
+    for _ in range(50):  # until two requests hold the two slots
+        if fake.api_calls(CATALOG_PATH) == 2:
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.5)  # the third keeps polling for a slot meanwhile
+
+    assert fake.api_calls(CATALOG_PATH) == 2
+    assert await redis.zcard(f"{prefix}:connections") == 2
+    gate.set()
+    await asyncio.gather(*calls)
+    assert fake.api_calls(CATALOG_PATH) == 3
+    assert peak == 2
+    assert await redis.zcard(f"{prefix}:connections") == 0  # every slot released
+
+
+@pytest.mark.asyncio
+async def test_no_slot_in_time_fails_clearly_without_sending_or_counting(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    client = _client(
+        redis,
+        prefix,
+        fake,
+        events,
+        sleeps,
+        sentinel_max_concurrent_requests=1,
+        sentinel_concurrency_wait_s=1,
+        sentinel_circuit_failure_threshold=1,
+    )
+    await client.get_token()
+    calls_before = len(fake.calls)
+    requests_before = (await client.request_usage()).made
+    # Another worker holds the only slot, with a lease far in the future.
+    await redis.zadd(f"{prefix}:connections", {"another-worker": 9_999_999_999_999})
+
+    with pytest.raises(SentinelConcurrencyTimeoutError) as caught:
+        await client.search_scenes(PREDIO, SEPT_1, SEPT_30)
+
+    assert caught.value.as_dict()["limit"] == 1
+    assert len(fake.calls) == calls_before  # nothing was sent
+    assert (await client.request_usage()).made == requests_before  # nor counted
+    assert events.types() == []  # our own limit is not an outage
+    assert await redis.get(f"{prefix}:circuit:failures") is None
+
+
+@pytest.mark.asyncio
+async def test_a_slot_whose_lease_expired_does_not_block(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    # A worker that died holding the only slot: its lease ended long ago.
+    client = _client(
+        redis,
+        prefix,
+        fake,
+        events,
+        sleeps,
+        sentinel_max_concurrent_requests=1,
+        sentinel_concurrency_wait_s=1,
+    )
+    await redis.zadd(f"{prefix}:connections", {"dead-worker": 1})
+    fake.queue(CATALOG_PATH, _ok({"features": [], "context": {}}))
+
+    assert await client.search_scenes(PREDIO, SEPT_1, SEPT_30) == []
 
 
 # --- secrets ------------------------------------------------------------------------

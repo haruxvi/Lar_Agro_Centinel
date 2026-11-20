@@ -210,6 +210,22 @@ el instante real de cada evento.
 - No ordenar el audit log solo por `timestamp` esperando un orden
   estable
 
+### Dos criterios en el esquema (desde la Fase 3)
+
+`analyses.requested_at` usa `clock_timestamp()` (migración
+`8a41c6d2e7b3`), no `now()`: debe registrar cuándo se pidió cada análisis,
+no cuándo empezó la transacción. Un job programado que pidiera análisis
+para varios predios en una sola transacción los dejaría a todos con la
+misma hora, y el listado "más reciente primero" dependería del UUID que
+desempata. Los listados de análisis desempatan además por `id`.
+
+`audit_log.timestamp` sigue con `now()` a propósito: esta limitación es
+una decisión documentada y se revisa entera en la Fase 7.
+
+El criterio para tablas nuevas: una columna que registra el instante de
+un hecho y alimenta un orden (`requested_at`, `uploaded_at`) usa
+`clock_timestamp()`; `audit_log` queda como está hasta la Fase 7.
+
 ### Revisar cuando
 
 Al diseñar la cadena de hashes (Fase 7).
@@ -455,3 +471,67 @@ probablemente se reemplace, y el evento `ANALYSIS_FORCED_RECOMPUTE`
 
 - Exista un caso real de recómputo frecuente, o
 - se defina la retención de rasters (KL-005 cubre el storage local).
+
+---
+
+## KL-008 — El análisis satelital depende de una cuota gratuita sin garantía de disponibilidad
+
+**Estado:** abierta
+**Introducida en:** Fase 3
+**Severidad:** baja hoy; bloqueante para un SLA comercial
+
+### Qué pasa
+
+El análisis satelital usa la cuota gratuita de Copernicus Data Space
+Ecosystem (cuenta Copernicus General). Según sus términos (sección 7), ese
+servicio se ofrece **sin garantía de disponibilidad**, y ESA puede
+suspenderlo o modificar la cuota en cualquier momento. La cuenta tiene
+además límites duros: 30 000 Processing Units y 30 000 requests por mes
+(dashboard, 2026-11-20), sin overage: al agotarse, la API deja de responder
+hasta el día 1 del mes siguiente. El FAQ fija 4 conexiones simultáneas para
+este tipo de cuenta.
+
+Los términos (sección 9) **prohíben crear varias cuentas para sumar cuota**.
+Hay una sola cuenta para todo el proyecto: desarrollo, pruebas manuales y
+producción comparten la misma cuota.
+
+### Por qué importa
+
+- La prioridad de disponibilidad del producto (SLO de 99,5 %) **no se puede
+  sostener para el análisis satelital** con la cuota gratuita: si ESA
+  suspende el servicio o reduce la cuota, el sistema no tiene a quién
+  reclamar ni alternativa.
+- Las pruebas en desarrollo gastan la cuota que usaría producción. Un
+  script de prueba mal escrito, o una suite que llamara a la API real,
+  podría dejar a los usuarios sin análisis por el resto del mes.
+
+### Qué ya lo mitiga
+
+El sistema degrada bien: sin credenciales o sin cuota, el análisis
+responde 503/429 con un motivo claro y el resto de la plataforma sigue
+funcionando; el circuit breaker evita insistir contra un servicio caído.
+Los presupuestos de PU y de requests (80 % de la cuota, ADR-004) frenan al
+sistema antes de que la API corte, el límite de 3 conexiones simultáneas
+queda bajo el de la cuenta, y la suite no puede usar credenciales reales
+(guard de `backend/tests/`).
+
+### Qué implicaría resolverlo
+
+Contratar cuota bajo términos comerciales (Sentinel Hub comercial o una
+cuota de Copernicus con condiciones de servicio), con un SLA propio, y
+separar la cuota de desarrollo de la de producción. Opcionalmente, una
+segunda fuente de escenas como respaldo.
+
+### Mientras tanto, qué NO hacer
+
+- No ofrecer un SLA comercial que incluya el análisis satelital
+- No crear cuentas adicionales de Copernicus para sumar cuota (prohibido
+  por los términos, sección 9)
+- No correr scripts contra la API real sin mirar antes el consumo del mes
+  (`/api/v1/analysis/status`)
+- No subir los presupuestos por encima del 80 % de la cuota
+
+### Revisar cuando
+
+Antes del primer cliente con contrato, o si Copernicus cambia la cuota o
+los términos del servicio gratuito.

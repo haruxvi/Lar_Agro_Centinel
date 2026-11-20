@@ -199,7 +199,7 @@ class AnalysisRepository:
             statement = statement.where(Analysis.scene_date >= filters.scene_date_from)
         if filters.scene_date_to is not None:
             statement = statement.where(Analysis.scene_date <= filters.scene_date_to)
-        statement = statement.order_by(Analysis.requested_at.desc(), Analysis.id)
+        statement = statement.order_by(Analysis.requested_at.desc(), Analysis.id.desc())
         return paginate(self._session, statement, params)
 
     def lote_stats(self, analysis_id: uuid.UUID) -> list[AnalysisLoteStats]:

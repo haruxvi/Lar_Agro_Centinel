@@ -60,6 +60,40 @@ Todos llevan `predio_id`, `actor_user_id`, `actor_role`, `actor_ip`,
 las asignaciones, `user`) y
 `target_resource_id`.
 
+## Análisis satelital (Fase 3)
+
+Diseño en [ADR-004](decisions/ADR-004-satellite-analysis.md). Los eventos
+del worker no tienen request HTTP: se atribuyen a quien pidió el análisis
+(`actor_user_id`), sin `actor_role` ni `actor_ip`. `target_resource_type`
+es `analysis` y `target_resource_id` el id del análisis, salvo en los dos
+eventos de Sentinel Hub, que no son de un análisis en particular y no
+tienen actor ni recurso.
+
+| Evento | Categoría | Severidad | Cuándo | `details` |
+|---|---|---|---|---|
+| `ANALYSIS_REQUESTED` | DOMAIN | INFO | Se crea un análisis PENDING y se encola | `analysis_type`, `date_from`, `date_to`, `force` |
+| `ANALYSIS_STARTED` | DOMAIN | INFO | El worker toma el análisis y lo pasa a RUNNING | vacío |
+| `ANALYSIS_COMPLETED` | DOMAIN | INFO | Termina COMPLETED | `scene_id`, `scene_date`, `cloud_coverage`, `valid_pixels_ratio`, `processing_units_spent`, `reflectance_percentiles` (p1/p50/p99 de B04 y B08), `lotes_measured`, `lotes_excluded`, `anomalies_by_severity`, `duration_s` |
+| `ANALYSIS_FAILED` | DOMAIN | WARNING | Termina FAILED, incluido el barrido de zombies (`TIMEOUT`, `QUEUE_TIMEOUT`) | `error_code`, `duration_s` o `timeout_s` |
+| `ANALYSIS_NO_SUITABLE_SCENE` | DOMAIN | INFO | Ninguna fecha bajo el umbral de nubes, o escena con pocos píxeles válidos | `scenes_evaluated`, `best_cloud_fraction`, `valid_pixels_ratio`, `processing_units_spent`, `duration_s` |
+| `ANALYSIS_RESOLVED_TO_EXISTING` | DOMAIN | INFO | La escena ya tenía un resultado vigente: termina DUPLICATE_SCENE sin descargar bandas | `resolved_to_analysis_id`, `scene_id`, `scene_date`, `processing_units_spent`, `duration_s` |
+| `ANALYSIS_FORCED_RECOMPUTE` | DOMAIN | WARNING | Un recómputo con `force` reemplaza al resultado vigente de la escena | `superseded_analysis_id`, `scene_id`, `reviewed_anomalies` |
+| `ANOMALY_DETECTED` | DOMAIN | INFO | Un análisis COMPLETED tiene al menos una anomalía (uno por análisis, no por anomalía) | `count`, `by_severity` |
+| `ANOMALY_REVIEWED` | DOMAIN | INFO | Un agrónomo revisa una anomalía | `anomaly_id`, `review_status`, `previous_review_status`, `severity`, `has_notes` (nunca el texto de la nota) |
+| `RASTER_DOWNLOADED` | DOMAIN | INFO | Se descarga el GeoTIFF de un análisis | `artifact` |
+| `SENTINEL_QUOTA_EXCEEDED` | SYSTEM | ERROR | Se agotó uno de los dos presupuestos mensuales: Processing Units o requests | `quota` (`PROCESSING_UNITS` o `REQUESTS`) y, según cuál, `spent_pu` y `budget_pu`, o `requests_made` y `budget_requests` |
+| `SENTINEL_CIRCUIT_OPEN` | SYSTEM | WARNING | El circuit breaker se abre tras fallos consecutivos | `consecutive_failures`, `reset_s`, `last_error` |
+
+Nunca un raster, nunca la geometría de una anomalía ni del predio, nunca el
+token ni las credenciales de Sentinel Hub.
+
+`ANALYSIS_FAILED` es WARNING porque es una falla del sistema, a diferencia de
+`ANALYSIS_NO_SUITABLE_SCENE`, que es el cielo nublado. `ANALYSIS_FORCED_RECOMPUTE`
+es WARNING porque gasta cuota dos veces sobre la misma escena y deja atrás
+las revisiones del análisis anterior (KL-007). `SENTINEL_QUOTA_EXCEEDED` es
+ERROR: hasta el mes siguiente no se puede correr ningún análisis. El de
+requests suele agotarse primero (unas 3 por análisis, ver ADR-004).
+
 ## Por qué WARNING
 
 Es WARNING lo que no se puede reconstruir desde el propio audit log:

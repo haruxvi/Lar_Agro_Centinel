@@ -117,7 +117,20 @@ class Settings(BaseSettings):
     sentinel_token_url: str = _CDSE_OAUTH_ENDPOINT
     sentinel_request_timeout_s: int = Field(120, gt=0)
     sentinel_max_retries: int = Field(3, ge=0)
-    sentinel_monthly_pu_budget: int = Field(30_000, gt=0)
+    # Monthly budgets, 80% of the account's quota (30 000 PU and 30 000
+    # requests on the Copernicus dashboard, 2026-11-20): a budget equal to
+    # the quota leaves no margin to react before the API itself refuses.
+    # Requests run out first: about 3 per analysis against 0.085 PU (ADR-004).
+    sentinel_monthly_pu_budget: int = Field(24_000, gt=0)
+    sentinel_monthly_request_budget: int = Field(24_000, gt=0)
+    # Simultaneous connections, across every worker process (a Redis
+    # semaphore). The Copernicus FAQ gives 4 for a Copernicus General account;
+    # one is left for the dashboard or a manual test. If the account's real
+    # limit is higher, only some parallelism is lost; if it is 4 and we used
+    # more, the refusals would look like a failing service (ADR-004).
+    sentinel_max_concurrent_requests: int = Field(3, gt=0)
+    # How long a request waits for a free slot before giving up.
+    sentinel_concurrency_wait_s: int = Field(120, gt=0)
     # Cloud cover is measured over the predio at low resolution: only a
     # percentage is needed, not an image (see ADR-004).
     sentinel_cloud_stats_resolution_m: int = Field(60, gt=0)

@@ -22,6 +22,10 @@ from app.shared.enums import (
 
 REVIEW_NOTES_MAX_LENGTH = 2000
 
+# [[south, west], [north, east]] in EPSG:4326 degrees: the corners Leaflet's
+# imageOverlay takes, latitude first.
+PreviewBounds = tuple[tuple[float, float], tuple[float, float]]
+
 
 class AnalysisCreate(BaseModel):
     """A request to analyse a predio. Missing dates default to the last month."""
@@ -109,7 +113,19 @@ class AnalysisRead(AnalysisListItem):
     error_detail: dict[str, Any] | None
     raster_url: str | None
     preview_url: str | None
+    preview_bounds: PreviewBounds | None = Field(
+        description=(
+            "Corners of preview.png (and ndvi.tif) as [[south, west], [north, east]] "
+            "in EPSG:4326, ready for a Leaflet imageOverlay. Null without rasters."
+        )
+    )
     anomalies_url: str | None
+    attribution: str | None = Field(
+        description=(
+            "Required credit for the satellite data, with the scene's year. "
+            "Show it wherever this result is shown (map, PDF, export)."
+        )
+    )
     anomaly_counts: dict[AnomalySeverity, int]
     lote_stats: list[LoteStatsRead]
 
@@ -193,8 +209,21 @@ class PuUsageRead(BaseModel):
     remaining: float
 
 
+class RequestUsageRead(BaseModel):
+    """This month's requests to Copernicus against the budget.
+
+    Usually the budget that runs out first: about 3 requests per analysis.
+    """
+
+    month: str
+    made: int
+    budget: int
+    remaining: int
+
+
 class AnalysisStatusRead(BaseModel):
     """Operational state of satellite analysis (not the public health check)."""
 
     available: bool
     processing_units: PuUsageRead | None
+    requests: RequestUsageRead | None

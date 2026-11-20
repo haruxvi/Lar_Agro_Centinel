@@ -191,12 +191,16 @@ class LoteStatsExclusion(StrEnum):
     """Why a lote has counts but no statistics in an analysis."""
 
     NOT_APPLICABLE_GREENHOUSE = "NOT_APPLICABLE_GREENHOUSE"
+    NOT_APPLICABLE_INFRASTRUCTURE = "NOT_APPLICABLE_INFRASTRUCTURE"
     INSUFFICIENT_PIXELS = "INSUFFICIENT_PIXELS"
 
 
 LOTE_STATS_EXCLUSION_LABELS: dict[LoteStatsExclusion, str] = {
     LoteStatsExclusion.NOT_APPLICABLE_GREENHOUSE: (
         "No aplica: el satélite mide el techo del invernadero, no el cultivo"
+    ),
+    LoteStatsExclusion.NOT_APPLICABLE_INFRASTRUCTURE: (
+        "No aplica: es infraestructura (techos, patios), no un cultivo"
     ),
     LoteStatsExclusion.INSUFFICIENT_PIXELS: (
         "Sin medición: muy pocos píxeles válidos en el lote"

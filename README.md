@@ -118,9 +118,14 @@ Design decisions live in [docs/decisions/](docs/decisions/).
 | 0 | Infrastructure, CI, quality gates | Done |
 | 1 | Authentication, 2FA, roles, append-only audit log | Done |
 | 2 | Predios and lotes: PostGIS geometry, validation and repair, user assignment | Done |
-| 3 | Satellite analysis (NDVI) | Next |
+| 3 | Satellite analysis: Sentinel-2 NDVI, async worker, per-lote statistics, anomaly detection | Done |
+| 4 | Devices and drone capture ingestion | Next |
 
 Phase 2 design: [ADR-003](docs/decisions/ADR-003-geospatial-model.md).
+Phase 3 design: [ADR-004](docs/decisions/ADR-004-satellite-analysis.md).
+Phase 3 was validated against real Copernicus Data Space data on
+2026-11-20, reflectance scaling and the baseline 04.00 offset included (see
+the ADR).
 
 ### Development data
 

@@ -192,6 +192,57 @@ def test_inconsistent_analyses_are_refused(
         _add(db_session, _analysis(predio, user, **overrides))
 
 
+_BOX = {
+    "preview_west": -71.4,
+    "preview_south": -34.7,
+    "preview_east": -71.3,
+    "preview_north": -34.6,
+}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {**_BOX, "preview_north": None},  # incomplete box
+        {**_BOX, "preview_west": -71.2},  # west east of east
+        {**_BOX, "preview_south": -34.5},  # south north of north
+        {**_BOX, "preview_west": -181.0},  # outside EPSG:4326
+        {**_BOX, "preview_north": 91.0},
+    ],
+)
+def test_preview_bounds_are_complete_ordered_and_in_range(
+    db_session: Session, predio: Predio, user: User, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_analyses_preview_bounds"):
+        _add(db_session, _analysis(predio, user, **overrides))
+
+
+def test_a_valid_preview_box_is_stored(
+    db_session: Session, predio: Predio, user: User
+) -> None:
+    analysis = _analysis(predio, user, **_BOX)
+    _add(db_session, analysis)
+    db_session.expire_all()
+    stored = db_session.get(Analysis, analysis.id)
+    assert stored is not None
+    assert (stored.preview_west, stored.preview_north) == (-71.4, -34.6)
+
+
+def test_requested_at_is_the_instant_of_each_insert_not_of_the_transaction(
+    db_session: Session, predio: Predio, user: User
+) -> None:
+    # One transaction, two analyses: now() would give them the same instant.
+    first = _analysis(predio, user, status=AnalysisStatus.FAILED, error_code="X")
+    _add(db_session, first)
+    second = _analysis(predio, user)
+    _add(db_session, second)
+    db_session.expire_all()
+    earlier = db_session.get(Analysis, first.id)
+    later = db_session.get(Analysis, second.id)
+    assert earlier is not None and later is not None
+    assert earlier.requested_at < later.requested_at
+
+
 # --- duplicates and supersession ----------------------------------------------------
 
 

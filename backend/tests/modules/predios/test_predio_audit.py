@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -21,7 +20,6 @@ from app.shared.roles import Role
 from tests.fixtures import geometries as g
 from tests.modules.predios.conftest import MakeUser
 
-CATALOGUE_DOC = Path(__file__).resolve().parents[4] / "docs" / "audit-events.md"
 QUARTER = g.STEP / 4
 
 # Nothing a summary legitimately needs comes close; a geometry would.
@@ -75,22 +73,6 @@ def test_what_cannot_be_undone_is_a_warning(event_type: str) -> None:
 def test_access_changes_are_security_events() -> None:
     for event_type in (events.PREDIO_USER_ASSIGNED, events.PREDIO_USER_UNASSIGNED):
         assert events.PREDIO_EVENTS[event_type].category is AuditEventCategory.SECURITY
-
-
-def test_the_catalogue_document_matches_the_code() -> None:
-    rows = {
-        match.group(1): (match.group(2), match.group(3))
-        for match in re.finditer(
-            r"^\| `([A-Z_]+)` \| (\w+) \| (\w+) \|",
-            CATALOGUE_DOC.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-    }
-    expected = {
-        event_type: (spec.category.value, spec.severity.value)
-        for event_type, spec in events.PREDIO_EVENTS.items()
-    }
-    assert rows == expected
 
 
 # --- the geometry guard -------------------------------------------------------

@@ -18,7 +18,9 @@ synthetic data and never needs the API.
 from __future__ import annotations
 
 import io
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final
 
 import numpy as np
@@ -27,7 +29,7 @@ import rasterio
 from PIL import Image
 from pyproj import Transformer
 from rasterio.features import geometry_mask
-from rasterio.transform import Affine
+from rasterio.transform import Affine, array_bounds
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
 
@@ -52,6 +54,18 @@ REFLECTANCE_MAX_OUTSIDE_RATIO: Final = 0.01
 # (medium, high), thin cirrus, snow/ice. Water (6) is configurable.
 EXCLUDED_SCL_CLASSES: Final = frozenset({0, 1, 3, 8, 9, 10, 11})
 SCL_WATER: Final = 6
+
+# Lote types the satellite NDVI does not apply to, and why: counted, never
+# measured, and therefore never searched for anomalies. The single place that
+# decides it. A greenhouse shows its plastic roof, not the crop; an
+# infrastructure zone (roofs, yards) has an NDVI that is noise, and its roofs
+# would read as low-NDVI anomalies.
+NOT_MEASURED_LOTE_TYPES: Final[Mapping[LoteType, LoteStatsExclusion]] = MappingProxyType(
+    {
+        LoteType.INVERNADERO: LoteStatsExclusion.NOT_APPLICABLE_GREENHOUSE,
+        LoteType.BODEGA_AREA: LoteStatsExclusion.NOT_APPLICABLE_INFRASTRUCTURE,
+    }
+)
 
 # Below this, NIR + RED is effectively zero and the ratio is noise.
 DENOMINATOR_EPSILON: Final = 1e-6
@@ -127,6 +141,17 @@ class NdviResult:
     def valid_ratio(self) -> float:
         """Return the share of the predio's pixels with a valid NDVI."""
         return self.valid_pixels / self.total_pixels if self.total_pixels else 0.0
+
+    @property
+    def bounds(self) -> tuple[float, float, float, float]:
+        """Return (west, south, east, north) of the grid, in ``crs`` units.
+
+        The same grid is written to ndvi.tif and rendered to preview.png, so
+        these are the corners of both.
+        """
+        height, width = self.ndvi.shape
+        west, south, east, north = array_bounds(height, width, self.transform)
+        return float(west), float(south), float(east), float(north)
 
 
 @dataclass(frozen=True)
@@ -255,8 +280,23 @@ def process_scene(
 # --- outputs --------------------------------------------------------------------------
 
 
-def write_geotiff(result: NdviResult) -> bytes:
-    """Encode the NDVI as a float32 GeoTIFF with explicit NaN nodata and its CRS."""
+# Required credit for any product derived from Sentinel data (Copernicus
+# terms). Every place that shows a satellite result must show it (ADR-004).
+ATTRIBUTION_TEMPLATE: Final = "Contains modified Copernicus Sentinel data {year}"
+DATA_SOURCE: Final = "Copernicus Sentinel-2 L2A, via Copernicus Data Space Ecosystem"
+
+
+def copernicus_attribution(year: int) -> str:
+    """Return the attribution text for data acquired in ``year``."""
+    return ATTRIBUTION_TEMPLATE.format(year=year)
+
+
+def write_geotiff(result: NdviResult, *, attribution: str | None = None) -> bytes:
+    """Encode the NDVI as a float32 GeoTIFF with explicit NaN nodata and its CRS.
+
+    With ``attribution``, the credit travels inside the file: as the TIFF
+    Copyright tag, which common GIS tools display, and as GDAL metadata.
+    """
     height, width = result.ndvi.shape
     profile = {
         "driver": "GTiff",
@@ -273,6 +313,12 @@ def write_geotiff(result: NdviResult) -> bytes:
         with memory.open(**profile) as target:
             target.write(result.ndvi, 1)
             target.set_band_description(1, "NDVI")
+            if attribution is not None:
+                target.update_tags(
+                    TIFFTAG_COPYRIGHT=attribution,
+                    ATTRIBUTION=attribution,
+                    DATA_SOURCE=DATA_SOURCE,
+                )
         return bytes(memory.read())
 
 
@@ -328,9 +374,9 @@ def lote_statistics(
 ) -> LoteNdviStats:
     """Return a lote's NDVI statistics, or its counts and why it has none.
 
-    Greenhouses are never measured by satellite: Sentinel-2 sees the plastic
-    roof, not the crop. The number would not be imprecise, it would be about
-    something else.
+    Lotes in NOT_MEASURED_LOTE_TYPES (greenhouses, infrastructure) are never
+    measured by satellite: the number would not be imprecise, it would be
+    about something else.
     """
     geometry = erode_metres(lote_geometry, settings.analysis_lote_inner_buffer_m)
     if geometry.is_empty:
@@ -342,8 +388,9 @@ def lote_statistics(
     total = int(np.count_nonzero(inside))
     valid = int(values.size)
 
-    if lote_type is LoteType.INVERNADERO:
-        return LoteNdviStats(valid, total, LoteStatsExclusion.NOT_APPLICABLE_GREENHOUSE)
+    not_applicable = NOT_MEASURED_LOTE_TYPES.get(lote_type)
+    if not_applicable is not None:
+        return LoteNdviStats(valid, total, not_applicable)
     enough = valid >= settings.analysis_lote_min_valid_pixels
     representative = total > 0 and valid / total >= settings.analysis_lote_min_valid_ratio
     if not (enough and representative):

@@ -82,6 +82,7 @@ export const ANOMALY_REVIEW_STATUS_LABELS: Record<AnomalyReviewStatus, string> =
 
 export const LOTE_STATS_EXCLUSIONS = {
   NOT_APPLICABLE_GREENHOUSE: 'NOT_APPLICABLE_GREENHOUSE',
+  NOT_APPLICABLE_INFRASTRUCTURE: 'NOT_APPLICABLE_INFRASTRUCTURE',
   INSUFFICIENT_PIXELS: 'INSUFFICIENT_PIXELS',
 } as const
 
@@ -89,5 +90,6 @@ export type LoteStatsExclusion = (typeof LOTE_STATS_EXCLUSIONS)[keyof typeof LOT
 
 export const LOTE_STATS_EXCLUSION_LABELS: Record<LoteStatsExclusion, string> = {
   NOT_APPLICABLE_GREENHOUSE: 'No aplica: el satélite mide el techo del invernadero, no el cultivo',
+  NOT_APPLICABLE_INFRASTRUCTURE: 'No aplica: es infraestructura (techos, patios), no un cultivo',
   INSUFFICIENT_PIXELS: 'Sin medición: muy pocos píxeles válidos en el lote',
 }

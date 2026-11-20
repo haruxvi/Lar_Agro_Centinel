@@ -19,11 +19,13 @@ from shapely.geometry import box
 
 from app.modules.analysis.ndvi import (
     BAND_ORDER,
+    NOT_MEASURED_LOTE_TYPES,
     InsufficientValidPixelsError,
     NdviResult,
     ReflectanceScaleError,
     check_reflectance,
     compute_ndvi,
+    copernicus_attribution,
     lote_statistics,
     process_scene,
     render_preview,
@@ -273,6 +275,47 @@ def test_a_greenhouse_is_counted_but_never_measured() -> None:
     assert stats.excluded_reason is LoteStatsExclusion.NOT_APPLICABLE_GREENHOUSE
     assert (stats.valid_pixels, stats.total_pixels) == (100, 100)
     assert stats.mean is None and stats.percentile_90 is None
+
+
+def test_an_infrastructure_zone_is_counted_but_never_measured() -> None:
+    # A storage yard: its roof reads as very low NDVI next to green rows. If it
+    # were measured, the roof would be the anomaly.
+    ndvi = np.full((SIZE, SIZE), 0.8, dtype=np.float32)
+    ndvi[12:15, 12:15] = 0.05
+    stats = lote_statistics(
+        _result(ndvi), _pixels(10, 10, 20, 20), LoteType.BODEGA_AREA, _settings()
+    )
+    assert stats.excluded_reason is LoteStatsExclusion.NOT_APPLICABLE_INFRASTRUCTURE
+    assert (stats.valid_pixels, stats.total_pixels) == (100, 100)
+    assert stats.mean is None and stats.std_dev is None
+
+
+def test_the_not_measured_types_are_declared_in_one_place() -> None:
+    assert dict(NOT_MEASURED_LOTE_TYPES) == {
+        LoteType.INVERNADERO: LoteStatsExclusion.NOT_APPLICABLE_GREENHOUSE,
+        LoteType.BODEGA_AREA: LoteStatsExclusion.NOT_APPLICABLE_INFRASTRUCTURE,
+    }
+    ndvi = np.full((SIZE, SIZE), 0.8, dtype=np.float32)
+    for lote_type in LoteType:
+        stats = lote_statistics(
+            _result(ndvi), _pixels(10, 10, 20, 20), lote_type, _settings()
+        )
+        assert stats.excluded_reason == NOT_MEASURED_LOTE_TYPES.get(lote_type)
+
+
+def test_the_geotiff_carries_the_copernicus_attribution() -> None:
+    text = copernicus_attribution(2026)
+    assert text == "Contains modified Copernicus Sentinel data 2026"
+
+    data = write_geotiff(
+        _result(np.full((SIZE, SIZE), 0.5, dtype=np.float32)), attribution=text
+    )
+
+    with rasterio.MemoryFile(data) as memory, memory.open() as raster:
+        tags = raster.tags()
+    assert tags["TIFFTAG_COPYRIGHT"] == text  # the TIFF Copyright tag
+    assert tags["ATTRIBUTION"] == text
+    assert "Copernicus Sentinel-2" in tags["DATA_SOURCE"]
 
 
 def test_a_lote_with_fewer_than_20_valid_pixels_has_no_values() -> None:

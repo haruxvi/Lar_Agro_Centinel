@@ -15,7 +15,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.modules.analysis import worker
 from app.modules.analysis.exceptions import AnalysisAlreadyActiveError
 from app.modules.analysis.models import Analysis, AnalysisLoteStats, Anomaly
-from app.modules.analysis.sentinel_client import SentinelQuotaExceededError
+from app.modules.analysis.sentinel_client import (
+    SentinelCredentialsRejectedError,
+    SentinelQuotaExceededError,
+)
 from app.modules.analysis.service import AnalysisService
 from app.modules.audit import events
 from app.modules.audit.models import AuditLog
@@ -168,6 +171,46 @@ async def test_a_run_completes_with_statistics_anomalies_and_rasters(
 
 
 @pytest.mark.asyncio
+async def test_an_infrastructure_zone_gets_neither_statistics_nor_anomalies(
+    db_session: Session,
+    service: AnalysisService,
+    predio: Predio,
+    user: User,
+    storage: LocalStorageBackend,
+) -> None:
+    # A storage yard whose roof reads as low NDVI: measured, it would be the
+    # anomaly. The same stressed corner makes a CUARTEL anomalous elsewhere.
+    bodega = create_lote(
+        db_session, predio, name="Bodega de insumos", lote_type=LoteType.BODEGA_AREA
+    )
+    analysis = _pending(service, predio, user)
+
+    status = await service.run(
+        analysis.id, FakeSentinelClient(zones=[_stressed_corner()]), storage
+    )
+
+    assert status is AnalysisStatus.COMPLETED
+    row = db_session.execute(
+        select(AnalysisLoteStats).where(
+            AnalysisLoteStats.analysis_id == analysis.id,
+            AnalysisLoteStats.lote_id == bodega.id,
+        )
+    ).scalar_one()
+    assert row.excluded_reason is LoteStatsExclusion.NOT_APPLICABLE_INFRASTRUCTURE
+    assert row.mean is None and row.total_pixels > 0
+    anomalies = db_session.execute(
+        select(Anomaly).where(Anomaly.analysis_id == analysis.id)
+    ).scalars()
+    assert list(anomalies) == []
+    completed = [
+        e
+        for e in _events(db_session, analysis)
+        if e.event_type == events.ANALYSIS_COMPLETED
+    ]
+    assert completed[0].details["lotes_excluded"] == {"NOT_APPLICABLE_INFRASTRUCTURE": 1}
+
+
+@pytest.mark.asyncio
 async def test_a_run_leaves_an_audit_trail_without_rasters_or_geometries(
     db_session: Session,
     service: AnalysisService,
@@ -243,9 +286,37 @@ async def test_a_domain_error_is_recorded_with_its_own_code(
     assert stored is not None and stored.error_code == "QUOTA_EXCEEDED"
     assert stored.error_detail == {
         "error": "SentinelQuotaExceededError",
+        "quota": "PROCESSING_UNITS",
         "spent_pu": 30_001.0,
         "budget_pu": 30_000,
     }
+
+
+@pytest.mark.asyncio
+async def test_expired_credentials_fail_the_analysis_with_an_actionable_message(
+    db_session: Session,
+    service: AnalysisService,
+    predio: Predio,
+    user: User,
+    storage: LocalStorageBackend,
+) -> None:
+    analysis = _pending(service, predio, user)
+    client = FakeSentinelClient(fetch_error=SentinelCredentialsRejectedError(401))
+
+    status = await service.run(analysis.id, client, storage)
+
+    assert status is AnalysisStatus.FAILED
+    db_session.expire_all()
+    stored = db_session.get(Analysis, analysis.id)
+    assert stored is not None
+    assert stored.error_code == "SENTINEL_CREDENTIALS_REJECTED"
+    assert stored.error_detail is not None
+    assert stored.error_detail["reason"] == "CREDENTIALS_REJECTED"
+    assert "inválidas o están vencidas" in stored.error_detail["message"]
+    failed = [
+        e for e in _events(db_session, analysis) if e.event_type == events.ANALYSIS_FAILED
+    ]
+    assert [e.details["error_code"] for e in failed] == ["SENTINEL_CREDENTIALS_REJECTED"]
 
 
 @pytest.mark.asyncio

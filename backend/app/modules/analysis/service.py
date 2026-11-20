@@ -46,6 +46,7 @@ from app.modules.analysis.ndvi import (
     LoteNdviStats,
     NdviResult,
     ReflectanceScaleError,
+    copernicus_attribution,
     lote_statistics,
     process_scene,
     render_preview,
@@ -59,12 +60,16 @@ from app.modules.analysis.repository import (
 from app.modules.analysis.sentinel_client import (
     NoSuitableSceneFoundError,
     PuUsage,
+    RequestUsage,
     SceneSelection,
     SentinelAuthError,
     SentinelCircuitOpenError,
+    SentinelConcurrencyTimeoutError,
+    SentinelCredentialsRejectedError,
     SentinelQuotaExceededError,
     SentinelRequestError,
     SentinelResponse,
+    quota_exceeded,
 )
 from app.modules.audit import events
 from app.modules.audit.service import AuditService
@@ -91,6 +96,9 @@ BANDS = ["B04", "B08", "SCL"]
 _ERROR_CODES: dict[type[Exception], str] = {
     SentinelQuotaExceededError: "QUOTA_EXCEEDED",
     SentinelCircuitOpenError: "SENTINEL_UNAVAILABLE",
+    SentinelConcurrencyTimeoutError: "SENTINEL_BUSY",
+    # Before SentinelAuthError: the first isinstance match wins.
+    SentinelCredentialsRejectedError: "SENTINEL_CREDENTIALS_REJECTED",
     SentinelAuthError: "SENTINEL_AUTH",
     SentinelRequestError: "SENTINEL_ERROR",
     ReflectanceScaleError: "REFLECTANCE_SCALE",
@@ -162,6 +170,21 @@ def _error_detail(exc: Exception) -> dict[str, Any]:
         return exc.as_dict()
     # Unexpected: the type and a bounded message are what an operator needs.
     return {"error": type(exc).__name__, "message": str(exc)[:_DETAIL_MESSAGE_LIMIT]}
+
+
+def attribution_for(analysis: Analysis) -> str | None:
+    """Return the Copernicus credit for an analysis that has a result to show.
+
+    The year is the scene's. Analyses without a result (pending, failed, no
+    suitable scene) have nothing to credit.
+    """
+    has_result = analysis.status in (
+        AnalysisStatus.COMPLETED,
+        AnalysisStatus.DUPLICATE_SCENE,
+    )
+    if not has_result or analysis.scene_date is None:
+        return None
+    return copernicus_attribution(analysis.scene_date.year)
 
 
 class AnalysisService:
@@ -248,10 +271,11 @@ class AnalysisService:
             )
         return start, end
 
-    def check_budget(self, usage: PuUsage) -> None:
-        """Refuse a request when this month's Processing Units are spent."""
-        if usage.spent >= usage.budget:
-            raise SentinelQuotaExceededError(usage.spent, usage.budget)
+    def check_budget(self, pu: PuUsage, requests: RequestUsage) -> None:
+        """Refuse a request when either monthly budget is spent, saying which."""
+        exceeded = quota_exceeded(pu, requests)
+        if exceeded is not None:
+            raise exceeded
 
     def create_pending(
         self,
@@ -488,7 +512,9 @@ class AnalysisService:
         metadata_key = analysis_artifact_key(
             analysis.predio_id, analysis.id, "metadata.json"
         )
-        await storage.put(raster_key, write_geotiff(result), "image/tiff")
+        attribution = copernicus_attribution(selection.scene_date.year)
+        geotiff = write_geotiff(result, attribution=attribution)
+        await storage.put(raster_key, geotiff, "image/tiff")
         await storage.put(preview_key, render_preview(result.ndvi), "image/png")
         metadata = {
             "analysis_id": str(analysis.id),
@@ -498,6 +524,7 @@ class AnalysisService:
             "crs": result.crs,
             "transform": list(result.transform)[:6],
             "processing_units": client.processing_units_spent,
+            "attribution": attribution,
         }
         await storage.put(metadata_key, json.dumps(metadata).encode(), "application/json")
         return raster_key, preview_key
@@ -557,6 +584,13 @@ class AnalysisService:
         analysis.processing_units_spent = client.processing_units_spent
         analysis.raster_key = raster_key
         analysis.preview_key = preview_key
+        # Once, here: the API serves them without ever opening the raster.
+        (
+            analysis.preview_west,
+            analysis.preview_south,
+            analysis.preview_east,
+            analysis.preview_north,
+        ) = result.bounds
         severities = Counter(
             anomaly.severity.value for item in per_lote for anomaly in item.anomalies
         )

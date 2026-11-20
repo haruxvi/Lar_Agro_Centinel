@@ -52,14 +52,17 @@ from app.modules.analysis.schema import (
     LoteHistoryPointRead,
     LoteHistoryRead,
     LoteStatsRead,
+    PreviewBounds,
     PuUsageRead,
+    RequestUsageRead,
     SupersedeCandidate,
 )
 from app.modules.analysis.sentinel_client import (
     SentinelQuotaExceededError,
     read_pu_usage,
+    read_request_usage,
 )
-from app.modules.analysis.service import AnalysisService
+from app.modules.analysis.service import AnalysisService, attribution_for
 from app.modules.predios.exceptions import (
     LoteNotFoundError,
     PredioError,
@@ -211,10 +214,11 @@ async def request_analysis(
             datetime.now(UTC).date(),
         )
         try:
-            usage = await _call(read_pu_usage, get_redis(), settings)
+            pu_usage = await _call(read_pu_usage, get_redis(), settings)
+            request_usage = await _call(read_request_usage, get_redis(), settings)
         except RedisError as exc:
             raise QueueUnavailableError from exc
-        service.check_budget(usage)
+        service.check_budget(pu_usage, request_usage)
 
         risk = None
         if body.force:
@@ -329,13 +333,24 @@ def read_analysis(
             if served and analysis.preview_key
             else None
         ),
+        preview_bounds=_preview_bounds(analysis) if served else None,
         anomalies_url=f"{_analysis_path(analysis)}/anomalies" if served else None,
+        attribution=attribution_for(analysis),
         anomaly_counts={
             severity: detail.anomaly_counts.get(severity, 0)
             for severity in AnomalySeverity
         },
         lote_stats=[LoteStatsRead.model_validate(row) for row in detail.lote_stats],
     )
+
+
+def _preview_bounds(analysis: Analysis) -> PreviewBounds | None:
+    """Return the preview's corners as Leaflet takes them: [[S, W], [N, E]]."""
+    west, south = analysis.preview_west, analysis.preview_south
+    east, north = analysis.preview_east, analysis.preview_north
+    if west is None or south is None or east is None or north is None:
+        return None
+    return ((south, west), (north, east))
 
 
 async def _artifact(
@@ -496,12 +511,15 @@ def read_lote_history(
     dependencies=[Depends(require_permission(Permission.AUDIT_VIEW_ALL))],
 )
 def read_analysis_status(settings: SettingsDep) -> AnalysisStatusRead:
-    """Report availability and this month's PU spending (not public /health)."""
+    """Report availability and this month's PU and requests (not public /health)."""
     available = analysis_available(settings)
     try:
         usage = read_pu_usage(get_redis(), settings)
+        requests = read_request_usage(get_redis(), settings)
     except RedisError:
-        return AnalysisStatusRead(available=available, processing_units=None)
+        return AnalysisStatusRead(
+            available=available, processing_units=None, requests=None
+        )
     return AnalysisStatusRead(
         available=available,
         processing_units=PuUsageRead(
@@ -509,5 +527,11 @@ def read_analysis_status(settings: SettingsDep) -> AnalysisStatusRead:
             spent=round(usage.spent, 4),
             budget=usage.budget,
             remaining=round(usage.remaining, 4),
+        ),
+        requests=RequestUsageRead(
+            month=requests.month,
+            made=requests.made,
+            budget=requests.budget,
+            remaining=requests.remaining,
         ),
     )

@@ -58,6 +58,17 @@ _STAT_COLUMNS = (
 _ALL_STATS_PRESENT = " AND ".join(f"{column} IS NOT NULL" for column in _STAT_COLUMNS)
 _ALL_STATS_ABSENT = " AND ".join(f"{column} IS NULL" for column in _STAT_COLUMNS)
 
+# Repeated verbatim in migration 9d52b7e3f1c4: migrations never import models.
+PREVIEW_BOUNDS_CHECK = (
+    "(preview_west IS NULL AND preview_south IS NULL "
+    "AND preview_east IS NULL AND preview_north IS NULL) "
+    "OR (preview_west IS NOT NULL AND preview_south IS NOT NULL "
+    "AND preview_east IS NOT NULL AND preview_north IS NOT NULL "
+    "AND preview_west >= -180 AND preview_east <= 180 AND preview_west < preview_east "
+    "AND preview_south >= -90 AND preview_north <= 90 "
+    "AND preview_south < preview_north)"
+)
+
 
 class Analysis(Base):
     """One request to compute an index over a predio, and its outcome."""
@@ -102,6 +113,13 @@ class Analysis(Base):
         CheckConstraint(
             "superseded_by_analysis_id IS NULL OR status = 'COMPLETED'",
             name="ck_analyses_superseded_only_completed",
+        ),
+        # Preview bounds come as a whole or not at all, inside EPSG:4326 and
+        # with a positive extent: a half-written or flipped box would put the
+        # overlay in the wrong place without anyone noticing.
+        CheckConstraint(
+            PREVIEW_BOUNDS_CHECK,
+            name="ck_analyses_preview_bounds",
         ),
         # Idempotency: one current result per (predio, type, scene). A forced
         # recompute supersedes the old one instead of deleting it.
@@ -162,8 +180,10 @@ class Analysis(Base):
     requested_by_user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT")
     )
+    # clock_timestamp(), not now(): the instant of the request even when several
+    # analyses are created in one transaction. audit_log keeps now() (KL-003).
     requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.clock_timestamp()
     )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
@@ -171,6 +191,14 @@ class Analysis(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # Bounds of ndvi.tif and preview.png (same grid), EPSG:4326 degrees.
+    # Stored once at completion so the API never opens the raster to answer.
+    # NULL on analyses without rasters, and on those completed before the
+    # columns existed (their rasters are still in storage).
+    preview_west: Mapped[float | None] = mapped_column(Float, default=None)
+    preview_south: Mapped[float | None] = mapped_column(Float, default=None)
+    preview_east: Mapped[float | None] = mapped_column(Float, default=None)
+    preview_north: Mapped[float | None] = mapped_column(Float, default=None)
 
 
 class AnalysisLoteStats(Base):
