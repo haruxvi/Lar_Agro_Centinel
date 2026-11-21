@@ -11,11 +11,16 @@ HTTP worker that long would stall the API with a handful of users.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, cast
 
 from arq import cron
 from arq.connections import RedisSettings
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.modules.analysis.availability import analysis_available
@@ -95,6 +100,34 @@ async def expire_stale_analyses(ctx: dict[str, Any]) -> int:
         return AnalysisService(session, ctx["settings"]).expire_stale()
 
 
+# Backoff between retries of one Redis command: 0.5 s doubling, capped.
+REDIS_BACKOFF_BASE_S: Final = 0.5
+REDIS_BACKOFF_CAP_S: Final = 10.0
+
+
+def worker_redis_settings(settings: Settings) -> RedisSettings:
+    """Return the worker's Redis connection, resilient to short outages.
+
+    arq's defaults retry only while starting; afterwards one failed command
+    (a Redis restart, a few seconds of network loss) ended the worker. Here
+    every command is retried with exponential backoff on connection errors
+    and timeouts, and startup waits longer for Redis to come up.
+    """
+    return dataclasses.replace(
+        RedisSettings.from_dsn(str(settings.redis_url)),
+        conn_timeout=settings.worker_redis_conn_timeout_s,
+        conn_retries=settings.worker_redis_conn_retries,
+        conn_retry_delay=settings.worker_redis_conn_retry_delay_s,
+        retry_on_timeout=True,
+        # arq annotates this as instances; redis-py wants exception classes.
+        retry_on_error=cast(list[Exception], [RedisConnectionError, RedisTimeoutError]),
+        retry=Retry(
+            ExponentialBackoff(cap=REDIS_BACKOFF_CAP_S, base=REDIS_BACKOFF_BASE_S),
+            settings.worker_redis_command_retries,
+        ),
+    )
+
+
 class WorkerSettings:
     """arq configuration, read by ``arq app.modules.analysis.worker.WorkerSettings``."""
 
@@ -107,4 +140,8 @@ class WorkerSettings:
     # A little over the analysis timeout, so the sweeper is the one that
     # records a TIMEOUT rather than arq killing the job silently.
     job_timeout = get_settings().analysis_job_timeout_s + 60
-    redis_settings = RedisSettings.from_dsn(str(get_settings().redis_url))
+    redis_settings = worker_redis_settings(get_settings())
+    # The worker writes a health key this often; ``arq --check`` (the
+    # container health check) fails when it is stale: a hung worker, not
+    # only a dead one, is detected.
+    health_check_interval = get_settings().worker_health_check_interval_s

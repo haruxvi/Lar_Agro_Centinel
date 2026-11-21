@@ -43,6 +43,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: lar_backend
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -74,6 +75,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: lar_worker
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -92,6 +94,16 @@ services:
     networks:
       - lar_network
     command: arq app.modules.analysis.worker.WorkerSettings
+    # Detects a hung worker, not only a dead one: the worker refreshes an arq
+    # health key every WORKER_HEALTH_CHECK_INTERVAL_S (30 s) and `arq --check`
+    # fails when it is stale. Compose only marks the container unhealthy; it
+    # does not restart it (restart acts on exits). See docs/decisions/ADR-004.
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.modules.analysis.worker.WorkerSettings"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   frontend:
     build:

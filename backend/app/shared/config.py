@@ -90,6 +90,20 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: RedisDsn
+
+    # --- Worker connection to Redis ---
+    # A Redis outage of a few seconds must not kill the arq worker: with arq's
+    # defaults any failed command after startup ended the process.
+    # Startup: attempts and the pause between them.
+    worker_redis_conn_timeout_s: int = Field(5, gt=0)
+    worker_redis_conn_retries: int = Field(30, ge=0)
+    worker_redis_conn_retry_delay_s: int = Field(2, gt=0)
+    # Each command, once running: retried with exponential backoff (0.5 s
+    # doubling, capped at 10 s). 10 retries ride out about a minute of outage.
+    worker_redis_command_retries: int = Field(10, ge=0)
+    # How often the worker proves it is alive (arq health check key); the
+    # container health check reads it.
+    worker_health_check_interval_s: int = Field(30, gt=0)
     redis_cache_ttl_seconds: int = 300
 
     # Rate limiting

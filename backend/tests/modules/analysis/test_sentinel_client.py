@@ -32,6 +32,7 @@ from app.modules.analysis.sentinel_client import (
     PU_HEADER,
     SENTINEL_CIRCUIT_OPEN,
     SENTINEL_QUOTA_EXCEEDED,
+    SLOT_LEASE_MARGIN_S,
     STATISTICS_PATH,
     NoSuitableSceneFoundError,
     SentinelAuthError,
@@ -1021,6 +1022,94 @@ async def test_no_slot_in_time_fails_clearly_without_sending_or_counting(
     assert (await client.request_usage()).made == requests_before  # nor counted
     assert events.types() == []  # our own limit is not an outage
     assert await redis.get(f"{prefix}:circuit:failures") is None
+
+
+@pytest.mark.asyncio
+async def test_a_slot_held_by_a_dead_process_frees_itself_when_its_lease_ends(
+    redis: Redis,
+    prefix: str,
+    fake: FakeSentinel,
+    events: Events,
+    sleeps: Sleeps,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Lease = request timeout + margin. Shrunk to 2 s so the test can wait it
+    # out; the survivor gives up after 1 s, well inside the lease.
+    monkeypatch.setattr("app.modules.analysis.sentinel_client.SLOT_LEASE_MARGIN_S", 0)
+    settings = {
+        "sentinel_max_concurrent_requests": 1,
+        "sentinel_request_timeout_s": 2,
+        "sentinel_concurrency_wait_s": 1,
+    }
+    dying = _client(redis, prefix, fake, events, sleeps, **settings)
+    survivor = _client(redis, prefix, fake, events, sleeps, **settings)
+
+    # The dying process takes the only slot through the real code path, in its
+    # own task, and that task ends without releasing it: no __aexit__, no
+    # finally, no ZREM, exactly like a killed worker.
+    abandoned = dying._connection_slot()
+    await asyncio.create_task(abandoned.__aenter__())
+    assert await redis.zcard(f"{prefix}:connections") == 1
+
+    # While the lease is alive, nobody else gets the slot.
+    with pytest.raises(SentinelConcurrencyTimeoutError):
+        async with survivor._connection_slot():
+            pass
+
+    # Past the lease, the slot is available again, with no one releasing it.
+    await asyncio.sleep(1.2)
+    async with survivor._connection_slot():
+        assert await redis.zcard(f"{prefix}:connections") == 1  # the survivor's
+    assert await redis.zcard(f"{prefix}:connections") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_slow_request_never_holds_its_slot_past_the_timeout(
+    redis: Redis, prefix: str, fake: FakeSentinel, events: Events, sleeps: Sleeps
+) -> None:
+    # A response trickling in: each read under httpx's per-phase timeout, the
+    # whole far over it. The total bound ends it, and frees the slot, in time.
+    client = _client(
+        redis,
+        prefix,
+        fake,
+        events,
+        sleeps,
+        sentinel_request_timeout_s=1,
+        sentinel_max_retries=0,
+    )
+    await client.get_token()
+
+    async def trickling(_: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return _ok({"features": [], "context": {}})
+
+    fake.routes[CATALOG_PATH] = trickling
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(SentinelRequestError, match="timeout"):
+        await client.search_scenes(PREDIO, SEPT_1, SEPT_30)
+
+    assert asyncio.get_running_loop().time() - started < 3
+    assert await redis.zcard(f"{prefix}:connections") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_lease_outlives_the_request_timeout(
+    client: SentinelClient, redis: Redis, prefix: str
+) -> None:
+    # A request may take up to sentinel_request_timeout_s; its slot must not
+    # expire before that, or the limit could be exceeded mid-request.
+    async with client._connection_slot():
+        [(_, expires_ms)] = await redis.zrange(
+            f"{prefix}:connections", 0, -1, withscores=True
+        )
+        seconds, micros = await redis.time()
+        now_ms = seconds * 1000 + micros // 1000
+        lease_s = (expires_ms - now_ms) / 1000
+
+    timeout = client._settings.sentinel_request_timeout_s
+    assert lease_s > timeout
+    assert lease_s == pytest.approx(timeout + SLOT_LEASE_MARGIN_S, abs=1)
 
 
 @pytest.mark.asyncio

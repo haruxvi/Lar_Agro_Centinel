@@ -684,7 +684,13 @@ class SentinelClient:
                 raise SentinelConcurrencyTimeoutError(limit, waited)
             await asyncio.sleep(SLOT_POLL_S)
         try:
-            yield
+            # httpx's timeout bounds each phase (connect, read, write), not the
+            # whole request: a response trickling in could outlive the lease
+            # and let the limit be exceeded mid-request. This bounds the total,
+            # so a slot is never held past sentinel_request_timeout_s, well
+            # inside its lease.
+            async with asyncio.timeout(self._settings.sentinel_request_timeout_s):
+                yield
         finally:
             await self._redis.zrem(self._slots_key, member)
 
@@ -749,7 +755,7 @@ class SentinelClient:
                         "client_secret": client_secret.get_secret_value(),
                     },
                 )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, TimeoutError) as exc:
             raise SentinelAuthError(
                 f"token request failed: {type(exc).__name__}"
             ) from None
@@ -908,7 +914,7 @@ class SentinelClient:
                         timeout=self._settings.sentinel_request_timeout_s,
                         **kwargs,
                     )
-            except httpx.TimeoutException:
+            except (httpx.TimeoutException, TimeoutError):
                 failure = "timeout"
             except httpx.TransportError as exc:
                 failure = f"transport error ({type(exc).__name__})"

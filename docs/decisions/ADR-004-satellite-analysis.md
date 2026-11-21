@@ -47,6 +47,21 @@ It answers 202 with the analysis id; the client polls.
   `analysis_pending_timeout_s` (`QUEUE_TIMEOUT`). Without it a dead worker
   would block the predio forever through the index above.
 - The service has no knowledge of FastAPI or arq; both call into it.
+- **The worker survives short Redis outages.** arq's defaults retried Redis
+  only while starting; once running, a single failed command ended the
+  process (it happened on 2026-11-20 when the host went to sleep). Its Redis
+  connection now retries every command on connection errors and timeouts,
+  with exponential backoff (0.5 s doubling, capped at 10 s; 10 retries ride
+  out about a minute), and waits longer at startup
+  (`worker_redis_*` settings). Verified live: Redis frozen for 21 s, the
+  worker kept running with no restart and no error.
+- **A hung worker is detected, not only a dead one.** The worker refreshes
+  arq's health key every 30 s (`worker_health_check_interval_s`); the
+  compose health check runs `arq --check`, which fails when the key is
+  stale. Verified live: a frozen worker (SIGSTOP) stayed `running` but was
+  marked `unhealthy` after 99 s. `restart: unless-stopped` brings back a
+  worker that exits; compose does **not** restart an unhealthy container, so
+  acting on `unhealthy` belongs to the production orchestrator.
 
 ### Storage abstraction
 
@@ -391,6 +406,16 @@ clock so every worker shares it, drops expired leases and admits a request
 only while fewer than 3 are held. A worker that dies holding a slot frees it
 when the lease ends (`sentinel_request_timeout_s` + 30 s). An in-memory
 semaphore would let each worker through on its own.
+
+A slot is a **lease**, not a counter: if the process holding it dies
+without releasing it, the slot frees itself when the lease ends. A test
+takes a slot through the real code path in a task that ends without
+releasing it, and checks that another client is refused while the lease is
+alive and admitted once it ends. The lease must outlive any request: httpx's
+timeout bounds each phase (connect, read, write) and not the whole request,
+so the slot also bounds the total with `asyncio.timeout`
+(`sentinel_request_timeout_s`), and a request trickling in for longer is
+cut instead of outliving its lease.
 
 Every HTTP request takes a slot, the token request included, and is counted
 against the request budget only once it holds one. With no free slot a
