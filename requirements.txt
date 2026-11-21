@@ -6,6 +6,11 @@ fastapi==0.141.1
 uvicorn==0.53.0
 python-multipart==0.0.32
 
+# --- Time zones ---
+# IANA database for zoneinfo where the OS has none (Windows); was only a
+# transitive dependency of python-dateutil. See docs/dependencies.md.
+tzdata==2026.6
+
 # --- Settings & validation ---
 pydantic[email]==2.13.5
 pydantic-settings==2.15.0

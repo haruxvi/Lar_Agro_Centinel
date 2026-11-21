@@ -243,3 +243,65 @@ def test_pending_analyses_wait_at_least_one_run_before_expiring() -> None:
 def test_the_pending_timeout_defaults_above_the_job_timeout() -> None:
     settings = _settings()
     assert settings.analysis_pending_timeout_s >= settings.analysis_job_timeout_s
+
+
+# --- Phase 4: captures -----------------------------------------------------------
+
+
+def test_capture_defaults_match_the_phase_4_decisions() -> None:
+    settings = _settings()
+    assert settings.captures_max_file_size_mb == 40
+    assert settings.captures_max_files_per_request == 20
+    assert settings.captures_max_files_per_session == 2_000
+    assert settings.captures_upload_rate_limit == "60/minute"
+    assert settings.captures_max_image_pixels == 60_000_000
+    assert settings.captures_thumbnail_max_px == 512
+    assert settings.captures_thumbnail_quality == 80
+    assert settings.captures_gps_boundary_tolerance_m == 30.0
+    assert settings.captures_default_clock_timezone == "America/Santiago"
+    assert settings.captures_max_future_skew_s == 300
+    assert settings.captures_blur_threshold == 100.0
+    assert settings.capture_session_auto_close_hours == 24
+
+
+@pytest.mark.parametrize("zone", ["America/Punta_Arenas", "Pacific/Easter", "UTC"])
+def test_the_default_clock_timezone_accepts_chilean_zones(zone: str) -> None:
+    assert _settings(captures_default_clock_timezone=zone)
+
+
+@pytest.mark.parametrize("zone", ["Chile/Nowhere", "localtime", "Etc/GMT+3", "-03:00"])
+def test_an_invalid_default_clock_timezone_refuses_to_start(zone: str) -> None:
+    with pytest.raises(ValidationError, match="IANA time zone"):
+        _settings(captures_default_clock_timezone=zone)
+
+
+def test_a_request_cannot_carry_more_files_than_a_session_accepts() -> None:
+    with pytest.raises(ValidationError, match="CAPTURES_MAX_FILES_PER_REQUEST"):
+        _settings(captures_max_files_per_request=50, captures_max_files_per_session=10)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"captures_max_file_size_mb": 0},
+        {"captures_max_image_pixels": 0},
+        {"captures_thumbnail_quality": 0},
+        {"captures_thumbnail_quality": 100},  # above 95 Pillow bloats the file
+        {"captures_gps_boundary_tolerance_m": -1.0},
+        {"captures_blur_threshold": -1.0},
+        {"capture_session_auto_close_hours": 0},
+    ],
+)
+def test_capture_limits_out_of_range_refuse_to_start(overrides: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**overrides)
+
+
+@pytest.mark.parametrize("variable", ["MAX_UPLOAD_SIZE_MB", "STORAGE_PATH"])
+def test_settings_removed_in_phase_4_in_an_old_environment_do_not_break_startup(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    # Removed because nothing used them; an old .env may still set them.
+    monkeypatch.setenv(variable, "50")
+    settings = _settings()
+    assert not hasattr(settings, variable.lower())

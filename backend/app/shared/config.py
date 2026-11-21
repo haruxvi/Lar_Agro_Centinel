@@ -8,6 +8,8 @@ from typing import Literal
 from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.shared.timezones import is_valid_timezone
+
 # Placeholder secrets that ship in documentation and templates. A deployment
 # that still carries one of these is misconfigured, and the app must not start.
 _EXAMPLE_SECRET_PREFIXES = ("change", "dev_secret", "your_", "example", "replace")
@@ -197,6 +199,42 @@ class Settings(BaseSettings):
     storage_s3_bucket: str | None = None
     storage_s3_region: str | None = None
 
+    # --- Captures: upload (see docs/decisions/ADR-005) ---
+    # Limits are enforced while streaming each file, never from what the
+    # client declares (Content-Length, file name, Content-Type).
+    captures_max_file_size_mb: int = Field(40, gt=0)
+    captures_max_files_per_request: int = Field(20, gt=0)
+    captures_max_files_per_session: int = Field(2_000, gt=0)
+    captures_upload_rate_limit: str = "60/minute"
+
+    # --- Captures: decoding (in the worker, never in the HTTP process) ---
+    # Pillow's decompression-bomb limit, applied with its warning turned into
+    # an error: Pillow itself only fails at twice this value.
+    captures_max_image_pixels: int = Field(60_000_000, gt=0)
+    captures_thumbnail_max_px: int = Field(512, gt=0)
+    captures_thumbnail_quality: int = Field(80, ge=1, le=95)
+
+    # --- Captures: georeference and time ---
+    # Absorbs the error of a consumer GPS (2 to 5 m) plus the fact that a drone
+    # photographing the edge of a predio is usually flying just outside it.
+    captures_gps_boundary_tolerance_m: float = Field(30.0, ge=0)
+    # Most consumer drones write EXIF time without a zone: the local time of
+    # the drone's clock. This is the zone assumed for a device that does not
+    # declare its own (IANA name, validated at startup).
+    captures_default_clock_timezone: str = "America/Santiago"
+    captures_max_future_skew_s: int = Field(300, ge=0)
+
+    # --- Captures: quality ---
+    # PROVISIONAL, not calibrated against real photos of the target drone: a
+    # sharp farm photo with a lot of uniform soil scores low too. The BLURRY
+    # flag is advisory until a batch of real photos fixes the value (ADR-005).
+    captures_blur_threshold: float = Field(100.0, ge=0)
+
+    # --- Capture sessions ---
+    # An OPEN session blocks its device for other flights; one forgotten open
+    # is closed by the periodic task after this long without activity.
+    capture_session_auto_close_hours: int = Field(24, gt=0)
+
     # Geospatial (see docs/decisions/ADR-003-geospatial-model.md)
     geo_srid: int = 4326
     geo_max_polygon_vertices: int = 10_000
@@ -211,10 +249,6 @@ class Settings(BaseSettings):
     # floor forgives digitising noise on small ones. See assess_repair().
     geo_repair_max_area_change_ratio: float = 0.01  # 1%
     geo_repair_ignore_below_m2: float = 50.0
-
-    # Storage
-    storage_path: str = "./data"
-    max_upload_size_mb: int = 50
 
     # Audit retention (Ley 21.719 and SAG regulations)
     audit_retention_days_security: int = 365
@@ -286,6 +320,16 @@ class Settings(BaseSettings):
             # behind a job in progress.
             raise ValueError(
                 "ANALYSIS_PENDING_TIMEOUT_S cannot be shorter than ANALYSIS_JOB_TIMEOUT_S"
+            )
+        if self.captures_max_files_per_request > self.captures_max_files_per_session:
+            raise ValueError(
+                "CAPTURES_MAX_FILES_PER_REQUEST cannot exceed "
+                "CAPTURES_MAX_FILES_PER_SESSION"
+            )
+        if not is_valid_timezone(self.captures_default_clock_timezone):
+            raise ValueError(
+                "CAPTURES_DEFAULT_CLOCK_TIMEZONE must be an IANA time zone, such as "
+                "America/Santiago, America/Punta_Arenas or Pacific/Easter"
             )
         if self.anomaly_severity_high_zscore > self.anomaly_zscore_threshold:
             # A HIGH cut above the detection threshold would make every
