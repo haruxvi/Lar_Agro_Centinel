@@ -28,8 +28,8 @@ COPY backend ./backend
 
 # Run as an unprivileged user.
 # /app/data exists before the volume is mounted so the volume inherits the
-# app user's ownership; otherwise the worker could not write rasters.
-RUN mkdir -p /app/data/rasters \
+# app user's ownership; otherwise the worker could not write to storage.
+RUN mkdir -p /app/data/storage \
     && useradd --create-home --uid 10001 app \
     && chown -R app:app /app
 USER app

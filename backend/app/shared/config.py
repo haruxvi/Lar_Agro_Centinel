@@ -188,10 +188,12 @@ class Settings(BaseSettings):
     anomaly_severity_high_area_m2: float = Field(5_000.0, gt=0)
     anomaly_severity_high_area_ratio: float = Field(0.10, gt=0, le=1)
 
-    # --- Raster storage ---
+    # --- File storage (analysis rasters, drone captures) ---
     # "local" is not fit for production on ephemeral filesystems (KL-005).
+    # The root holds every kind of object; keys say which (rasters/...,
+    # captures/...) and are stored relative to it.
     storage_backend: Literal["local", "s3"] = "local"
-    storage_local_path: str = "./data/rasters"
+    storage_local_path: str = "./data/storage"
     storage_s3_bucket: str | None = None
     storage_s3_region: str | None = None
 

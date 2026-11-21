@@ -299,7 +299,8 @@ Antes del primer despliegue fuera de desarrollo.
 Los GeoTIFF y previews de cada análisis se guardan a través de
 `StorageBackend` (`backend/app/shared/storage.py`). La única
 implementación hoy es `LocalStorageBackend`, que escribe en
-`STORAGE_LOCAL_PATH` (por defecto `./data/rasters`).
+`STORAGE_LOCAL_PATH` (por defecto `./data/storage`, que desde la Fase 4
+aloja también las capturas de drone).
 `S3StorageBackend` existe solo como stub: con `STORAGE_BACKEND=s3` la
 aplicación no arranca.
 
